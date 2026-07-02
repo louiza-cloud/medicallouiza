@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
@@ -322,10 +322,21 @@ function ReservationsTab({ appointments, setAppointments }: { appointments: Appo
 function MessagerieTab({ messages, setMessages, selectedConversation, setSelectedConversation }: { messages: Message[]; setMessages: (m: Message[]) => void; selectedConversation: string | null; setSelectedConversation: (id: string | null) => void }) {
   const [replyContent, setReplyContent] = useState('');
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const conversations = Array.from(new Set(messages.map(m => m.conversation_id)));
   const convMessages = messages.filter(m => m.conversation_id === selectedConversation);
 
-  // Real-time subscription for messages
+  const scrollToBottom = useCallback(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [convMessages, scrollToBottom]);
+
   useEffect(() => {
     if (!selectedConversation) return;
     const channel = supabase
@@ -342,29 +353,42 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
       )
       .subscribe();
     return () => { channel.unsubscribe(); };
-  }, [selectedConversation]);
+  }, [selectedConversation, setMessages]);
 
   const handleReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!replyContent.trim() || !selectedConversation) return;
-    setSending(true);
-    const { data } = await supabase.from('messages').insert({ conversation_id: selectedConversation, sender_type: 'doctor', sender_name: 'Dr. Djalane', content: replyContent.trim() }).select().single();
-    if (data) setMessages([...messages, data]);
+
+    const content = replyContent.trim();
     setReplyContent('');
+    setSending(true);
+
+    const { data, error } = await supabase.from('messages').insert({
+      conversation_id: selectedConversation,
+      sender_type: 'doctor',
+      sender_name: 'Dr. Djalane',
+      content: content
+    }).select().single();
+
+    if (data && !error) setMessages(prev => [...prev, data]);
+    if (error) {
+      console.error('Error:', error);
+      setReplyContent(content);
+    }
     setSending(false);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedConversation) return;
-    if (file.size > 10 * 1024 * 1024) { alert('Fichier trop volumineux (max 10 Mo)'); return; }
-    if (!isAllowedFile(file)) { alert('Type de fichier non autorisé. Images, PDF et Word uniquement.'); return; }
+    if (file.size > 10 * 1024 * 1024) { alert('Fichier trop volumineux (max 10 Mo)'); e.target.value = ''; return; }
+    if (!isAllowedFile(file)) { alert('Type de fichier non autorisé.'); e.target.value = ''; return; }
 
-    setSending(true);
+    setUploading(true);
     try {
       const result = await uploadToCloudinary(file, 'messages');
       if (result) {
-        const { data } = await supabase.from('messages').insert({
+        const { data, error } = await supabase.from('messages').insert({
           conversation_id: selectedConversation,
           sender_type: 'doctor',
           sender_name: 'Dr. Djalane',
@@ -373,13 +397,13 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
           attachment_name: file.name,
           attachment_type: getFileType(file),
         }).select().single();
-        if (data) setMessages([...messages, data]);
+        if (data && !error) setMessages(prev => [...prev, data]);
       }
     } catch (err) {
       console.error(err);
       alert('Erreur lors de l\'envoi du fichier');
     }
-    setSending(false);
+    setUploading(false);
     e.target.value = '';
   };
 
@@ -388,11 +412,12 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
 
     if (msg.attachment_type === 'image') {
       return (
-        <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2">
+        <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2 rounded-lg overflow-hidden">
           <img
             src={msg.attachment_url}
             alt={msg.attachment_name || 'Image'}
-            className="max-w-[200px] max-h-[150px] rounded-lg object-cover border border-white/20 hover:opacity-90 transition-opacity"
+            className="max-w-full w-auto h-auto max-h-48 object-contain rounded-lg hover:opacity-90 transition-opacity"
+            loading="lazy"
           />
         </a>
       );
@@ -400,71 +425,106 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
 
     const isPdf = msg.attachment_type === 'pdf';
     const Icon = isPdf ? FileText : File;
-    const colorClass = isPdf ? 'text-red-400' : 'text-blue-400';
-    const bgClass = isPdf ? 'bg-red-900/20 border-red-800/30' : 'bg-blue-900/20 border-blue-800/30';
 
     return (
       <a
         href={msg.attachment_url}
         target="_blank"
         rel="noopener noreferrer"
-        className={`flex items-center gap-3 mt-2 p-3 rounded-lg border ${bgClass} hover:opacity-90 transition-opacity`}
+        download
+        className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
       >
-        <Icon className={`w-8 h-8 ${colorClass} shrink-0`} />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{msg.attachment_name || 'Document'}</p>
-          <p className="text-xs opacity-70">{isPdf ? 'PDF' : 'Word'} — Cliquez pour télécharger</p>
-        </div>
-        <Download className={`w-4 h-4 ${colorClass} shrink-0`} />
+        <Icon className="w-5 h-5 shrink-0" />
+        <span className="text-sm truncate flex-1">{msg.attachment_name || 'Document'}</span>
+        <Download className="w-4 h-4 shrink-0 opacity-60" />
       </a>
     );
   };
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-      <div className="bg-[#141B3D] border border-[#0A0F2C] rounded-xl h-[600px] flex">
-        <div className="w-1/3 border-r border-[#0A0F2C] overflow-y-auto">
-          <div className="p-4 border-b border-[#0A0F2C]"><h2 className="text-white font-medium">Conversations</h2></div>
+      <div className="bg-[#141B3D] border border-[#0A0F2C] rounded-xl h-[500px] sm:h-[600px] flex flex-col sm:flex-row">
+        {/* Conversations list */}
+        <div className="w-full sm:w-1/3 border-b sm:border-b-0 sm:border-r border-[#0A0F2C] overflow-y-auto max-h-[200px] sm:max-h-none">
+          <div className="p-3 sm:p-4 border-b border-[#0A0F2C] sticky top-0 bg-[#141B3D]">
+            <h2 className="text-white font-medium text-sm sm:text-base">Conversations</h2>
+          </div>
           <div className="divide-y divide-[#0A0F2C]">
             {conversations.map(convId => {
               const patientMsg = messages.find(m => m.conversation_id === convId && m.sender_type === 'patient');
               if (!patientMsg) return null;
               return (
-                <button key={convId} onClick={() => setSelectedConversation(convId)} className={`w-full p-4 text-left hover:bg-[#0A0F2C] ${selectedConversation === convId ? 'bg-[#0A0F2C]' : ''}`}>
-                  <span className="text-white font-medium">{patientMsg.sender_name}</span>
-                  <p className="text-gray-500 text-sm truncate">{messages.find(m => m.conversation_id === convId)?.content}</p>
+                <button
+                  key={convId}
+                  onClick={() => setSelectedConversation(convId)}
+                  className={`w-full p-3 sm:p-4 text-left hover:bg-[#0A0F2C] transition-colors ${selectedConversation === convId ? 'bg-[#0A0F2C]' : ''}`}
+                >
+                  <span className="text-white font-medium text-sm">{patientMsg.sender_name}</span>
+                  <p className="text-gray-500 text-xs sm:text-sm truncate mt-0.5">{messages.find(m => m.conversation_id === convId)?.content}</p>
                 </button>
               );
             })}
           </div>
         </div>
-        <div className="flex-1 flex flex-col">
+
+        {/* Chat area */}
+        <div className="flex-1 flex flex-col min-h-0">
           {selectedConversation ? (
             <>
-              <div className="p-4 border-b border-[#0A0F2C] bg-[#0A0F2C]/50"><h3 className="text-white font-medium">{messages.find(m => m.conversation_id === selectedConversation)?.sender_name}</h3></div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* Header */}
+              <div className="p-3 sm:p-4 border-b border-[#0A0F2C] bg-[#0A0F2C]/50 shrink-0">
+                <h3 className="text-white font-medium text-sm sm:text-base">
+                  {messages.find(m => m.conversation_id === selectedConversation)?.sender_name}
+                </h3>
+              </div>
+
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4 min-h-0">
                 {convMessages.map(msg => (
                   <div key={msg.id} className={`flex ${msg.sender_type === 'doctor' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[80%] p-3 rounded-lg ${msg.sender_type === 'doctor' ? 'bg-[#3B6FE8] text-white' : 'bg-[#0A0F2C] text-gray-300'}`}>
-                      {msg.content !== '[Fichier joint]' && <p className="text-sm">{msg.content}</p>}
+                    <div className={`max-w-[85%] sm:max-w-[75%] p-3 rounded-2xl ${msg.sender_type === 'doctor' ? 'bg-[#3B6FE8] text-white rounded-br-sm' : 'bg-[#0A0F2C] text-gray-300 rounded-bl-sm'}`}>
+                      {msg.content !== '[Fichier joint]' && (
+                        <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-anywhere">{msg.content}</p>
+                      )}
                       {renderAttachment(msg)}
-                      <p className={`text-xs mt-1 ${msg.sender_type === 'doctor' ? 'text-blue-100' : 'text-gray-500'}`}>{new Date(msg.created_at).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</p>
+                      <p className={`text-[10px] sm:text-xs mt-1 sm:mt-2 ${msg.sender_type === 'doctor' ? 'text-blue-100/70' : 'text-gray-500'}`}>
+                        {new Date(msg.created_at).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                      </p>
                     </div>
                   </div>
                 ))}
+                <div ref={messagesEndRef} className="h-1" />
               </div>
-              <form onSubmit={handleReply} className="p-4 border-t border-[#0A0F2C] flex gap-2">
-                <label className="p-2 bg-[#141B3D] rounded-lg cursor-pointer hover:bg-[#0A0F2C] transition-colors shrink-0" title="Joindre un fichier">
-                  <input type="file" accept="image/*,.pdf,.doc,.docx" onChange={handleFileUpload} className="hidden" disabled={sending} />
-                  <Paperclip className="w-5 h-5 text-gray-400" />
+
+              {/* Input */}
+              <form onSubmit={handleReply} className="p-3 sm:p-4 border-t border-[#0A0F2C] flex gap-2 shrink-0">
+                <label className={`p-2 sm:p-2.5 bg-[#0A0F2C] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${uploading ? 'opacity-50 cursor-wait' : ''}`} title="Joindre un fichier">
+                  <input type="file" accept="image/*,.pdf,.doc,.docx" onChange={handleFileUpload} className="hidden" disabled={sending || uploading} />
+                  {uploading ? <RefreshCw className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
                 </label>
-                <input type="text" value={replyContent} onChange={e => setReplyContent(e.target.value)} placeholder="Votre réponse..." className="flex-1 px-4 py-2 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8]" />
-                <button type="submit" disabled={sending || !replyContent.trim()} className="p-2 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50"><Send className="w-5 h-5" /></button>
+                <input
+                  type="text"
+                  value={replyContent}
+                  onChange={e => setReplyContent(e.target.value)}
+                  placeholder="Votre réponse..."
+                  className="flex-1 min-w-0 px-3 sm:px-4 py-2 sm:py-2.5 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8] transition-colors text-sm"
+                  disabled={sending || uploading}
+                />
+                <button
+                  type="submit"
+                  disabled={sending || uploading || !replyContent.trim()}
+                  className="p-2 sm:p-2.5 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed shrink-0 transition-colors"
+                >
+                  {sending ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                </button>
               </form>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center"><MessageSquare className="w-12 h-12 text-gray-700 mx-auto mb-3" /><p className="text-gray-500">Sélectionnez une conversation</p></div>
+            <div className="flex-1 flex items-center justify-center p-4">
+              <div className="text-center">
+                <MessageSquare className="w-12 h-12 text-gray-700 mx-auto mb-3" />
+                <p className="text-gray-500 text-sm">Selectionnez une conversation</p>
+              </div>
             </div>
           )}
         </div>
