@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download } from 'lucide-react';
+import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download, Reply, Edit2, Copy, MoreVertical, Check, CheckCheck, X, Search, Loader2, CornerDownLeft, Forward } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { uploadToCloudinary, getFileType, isAllowedFile, validateFile } from '../../lib/storage';
-import type { Appointment, Message, Document, Testimonial, TimeSlot } from '../../types';
+import type { Appointment, Message, Document, Testimonial, TimeSlot, TypingIndicator } from '../../types';
 
 type Tab = 'agenda' | 'reservations' | 'messagerie' | 'bibliotheque' | 'teleconsultation' | 'temoignages' | 'parametres';
 
@@ -323,9 +323,16 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
   const [replyContent, setReplyContent] = useState('');
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ messageId: string; x: number; y: number } | null>(null);
+  const [typing, setTyping] = useState<TypingIndicator | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   const conversations = Array.from(new Set(messages.map(m => m.conversation_id)));
-  const convMessages = messages.filter(m => m.conversation_id === selectedConversation);
+  const convMessages = messages.filter(m => m.conversation_id === selectedConversation && !m.deleted_at);
 
   const scrollToBottom = useCallback(() => {
     if (messagesEndRef.current) {
@@ -337,23 +344,71 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
     scrollToBottom();
   }, [convMessages, scrollToBottom]);
 
+  // Mark messages as read when viewing
+  useEffect(() => {
+    if (selectedConversation && convMessages.length > 0) {
+      supabase.rpc('mark_messages_read', {
+        p_conversation_id: selectedConversation,
+        p_user_type: 'doctor'
+      }).then(() => {
+        setMessages(prev => prev.map(m =>
+          m.conversation_id === selectedConversation && m.sender_type === 'patient' && !m.read_at
+            ? { ...m, status: 'read', read_at: new Date().toISOString() }
+            : m
+        ));
+      });
+    }
+  }, [selectedConversation, convMessages.length, setMessages]);
+
   useEffect(() => {
     if (!selectedConversation) return;
     const channel = supabase
       .channel(`admin-messages-${selectedConversation}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConversation}` },
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConversation}` },
         (payload) => {
           setMessages(prev => {
             if (prev.some(m => m.id === payload.new.id)) return prev;
             return [...prev, payload.new as Message];
           });
-        }
-      )
+        })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConversation}` },
+        (payload) => {
+          setMessages(prev => prev.map(m => m.id === payload.new.id ? payload.new as Message : m));
+        })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConversation}` },
+        (payload) => {
+          setMessages(prev => prev.filter(m => m.id !== payload.old.id));
+        })
       .subscribe();
     return () => { channel.unsubscribe(); };
   }, [selectedConversation, setMessages]);
+
+  // Typing indicator subscription
+  useEffect(() => {
+    if (!selectedConversation) return;
+    const channel = supabase
+      .channel(`admin-typing-${selectedConversation}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'typing_indicators', filter: `conversation_id=eq.${selectedConversation}` },
+        (payload) => {
+          const data = payload.new as TypingIndicator;
+          if (data.user_type === 'patient') {
+            setTyping(data);
+            setTimeout(() => setTyping(null), 3000);
+          }
+        })
+      .subscribe();
+    return () => { channel.unsubscribe(); };
+  }, [selectedConversation]);
+
+  const sendTypingIndicator = useCallback(async () => {
+    if (!selectedConversation) return;
+    await supabase.from('typing_indicators').upsert({
+      conversation_id: selectedConversation,
+      user_type: 'doctor',
+      user_name: 'Dr. Djalane',
+      created_at: new Date().toISOString()
+    }, { onConflict: 'conversation_id,user_type' });
+  }, [selectedConversation]);
 
   const handleReply = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -361,34 +416,47 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
 
     const content = replyContent.trim();
     setReplyContent('');
-    setSending(true);
 
-    const { data, error } = await supabase.from('messages').insert({
-      conversation_id: selectedConversation,
-      sender_type: 'doctor',
-      sender_name: 'Dr. Djalane',
-      content: content
-    }).select().single();
+    if (editingMessage) {
+      const { error } = await supabase.from('messages').update({
+        content,
+        is_edited: true,
+        edited_at: new Date().toISOString()
+      }).eq('id', editingMessage.id);
 
-    if (data && !error) setMessages(prev => [...prev, data]);
-    if (error) {
-      console.error('Error:', error);
-      setReplyContent(content);
+      if (!error) {
+        setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content, is_edited: true, edited_at: new Date().toISOString() } : m));
+      }
+      setEditingMessage(null);
+    } else {
+      setSending(true);
+      const msgData: Record<string, unknown> = {
+        conversation_id: selectedConversation,
+        sender_type: 'doctor',
+        sender_name: 'Dr. Djalane',
+        content,
+      };
+      if (replyingTo) msgData.reply_to_id = replyingTo.id;
+
+      const { data, error } = await supabase.from('messages').insert(msgData).select().single();
+      if (data && !error) setMessages(prev => [...prev, data]);
+      if (error) setReplyContent(content);
+      setReplyingTo(null);
+      setSending(false);
     }
-    setSending(false);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedConversation) return;
-    if (file.size > 10 * 1024 * 1024) { alert('Fichier trop volumineux (max 10 Mo)'); e.target.value = ''; return; }
-    if (!isAllowedFile(file)) { alert('Type de fichier non autorisé.'); e.target.value = ''; return; }
+    if (file.size > 10 * 1024 * 1024) { alert('Fichier trop volumineux'); e.target.value = ''; return; }
+    if (!isAllowedFile(file)) { alert('Type non autorisé'); e.target.value = ''; return; }
 
     setUploading(true);
     try {
       const result = await uploadToCloudinary(file, 'messages');
       if (result) {
-        const { data, error } = await supabase.from('messages').insert({
+        const msgData: Record<string, unknown> = {
           conversation_id: selectedConversation,
           sender_type: 'doctor',
           sender_name: 'Dr. Djalane',
@@ -396,70 +464,95 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
           attachment_url: result.secure_url,
           attachment_name: file.name,
           attachment_type: getFileType(file),
-        }).select().single();
+        };
+        if (replyingTo) msgData.reply_to_id = replyingTo.id;
+
+        const { data, error } = await supabase.from('messages').insert(msgData).select().single();
         if (data && !error) setMessages(prev => [...prev, data]);
+        setReplyingTo(null);
       }
     } catch (err) {
       console.error(err);
-      alert('Erreur lors de l\'envoi du fichier');
+      alert('Erreur');
     }
     setUploading(false);
     e.target.value = '';
   };
 
+  const handleEdit = (msg: Message) => {
+    if (msg.sender_type !== 'doctor') return;
+    setEditingMessage(msg);
+    setReplyContent(msg.content);
+    setReplyingTo(null);
+    inputRef.current?.focus();
+  };
+
+  const handleDelete = async (msg: Message) => {
+    if (msg.sender_type !== 'doctor') return;
+    if (!confirm('Supprimer ?')) return;
+
+    await supabase.from('messages').update({
+      deleted_at: new Date().toISOString(),
+      content: '[Message supprimé]'
+    }).eq('id', msg.id);
+
+    setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, deleted_at: new Date().toISOString(), content: '[Message supprimé]' } : m));
+    setContextMenu(null);
+  };
+
+  const handleCopy = (content: string) => {
+    navigator.clipboard.writeText(content);
+    setContextMenu(null);
+  };
+
   const renderAttachment = (msg: Message) => {
     if (!msg.attachment_url) return null;
-
     if (msg.attachment_type === 'image') {
       return (
         <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2 rounded-lg overflow-hidden">
-          <img
-            src={msg.attachment_url}
-            alt={msg.attachment_name || 'Image'}
-            className="max-w-full w-auto h-auto max-h-48 object-contain rounded-lg hover:opacity-90 transition-opacity"
-            loading="lazy"
-          />
+          <img src={msg.attachment_url} alt={msg.attachment_name || 'Image'} className="max-w-full max-h-48 object-contain rounded-lg" loading="lazy" />
         </a>
       );
     }
-
-    const isPdf = msg.attachment_type === 'pdf';
-    const Icon = isPdf ? FileText : File;
-
+    const Icon = msg.attachment_type === 'pdf' ? FileText : File;
     return (
-      <a
-        href={msg.attachment_url}
-        target="_blank"
-        rel="noopener noreferrer"
-        download
-        className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
-      >
+      <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" download className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20">
         <Icon className="w-5 h-5 shrink-0" />
-        <span className="text-sm truncate flex-1">{msg.attachment_name || 'Document'}</span>
-        <Download className="w-4 h-4 shrink-0 opacity-60" />
+        <span className="text-sm truncate">{msg.attachment_name || 'Document'}</span>
+        <Download className="w-4 h-4 opacity-60" />
       </a>
     );
   };
 
+  const renderStatus = (msg: Message) => {
+    if (msg.sender_type !== 'doctor') return null;
+    if (msg.status === 'read' || msg.read_at) return <CheckCheck className="w-4 h-4 text-blue-300" />;
+    if (msg.status === 'delivered') return <CheckCheck className="w-4 h-4 text-gray-400" />;
+    return <Check className="w-4 h-4 text-gray-400" />;
+  };
+
+  const filteredMessages = searchQuery ? convMessages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())) : convMessages;
+
+  const getUnreadCount = (convId: string) => messages.filter(m => m.conversation_id === convId && m.sender_type === 'patient' && !m.read_at).length;
+
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
       <div className="bg-[#141B3D] border border-[#0A0F2C] rounded-xl h-[500px] sm:h-[600px] flex flex-col sm:flex-row">
-        {/* Conversations list */}
         <div className="w-full sm:w-1/3 border-b sm:border-b-0 sm:border-r border-[#0A0F2C] overflow-y-auto max-h-[200px] sm:max-h-none">
-          <div className="p-3 sm:p-4 border-b border-[#0A0F2C] sticky top-0 bg-[#141B3D]">
+          <div className="p-3 sm:p-4 border-b border-[#0A0F2C] sticky top-0 bg-[#141B3D] flex items-center justify-between">
             <h2 className="text-white font-medium text-sm sm:text-base">Conversations</h2>
           </div>
           <div className="divide-y divide-[#0A0F2C]">
             {conversations.map(convId => {
               const patientMsg = messages.find(m => m.conversation_id === convId && m.sender_type === 'patient');
+              const unread = getUnreadCount(convId);
               if (!patientMsg) return null;
               return (
-                <button
-                  key={convId}
-                  onClick={() => setSelectedConversation(convId)}
-                  className={`w-full p-3 sm:p-4 text-left hover:bg-[#0A0F2C] transition-colors ${selectedConversation === convId ? 'bg-[#0A0F2C]' : ''}`}
-                >
-                  <span className="text-white font-medium text-sm">{patientMsg.sender_name}</span>
+                <button key={convId} onClick={() => setSelectedConversation(convId)} className={`w-full p-3 sm:p-4 text-left hover:bg-[#0A0F2C] transition-colors ${selectedConversation === convId ? 'bg-[#0A0F2C]' : ''}`}>
+                  <div className="flex items-center justify-between">
+                    <span className={`font-medium text-sm ${unread > 0 ? 'text-white' : 'text-gray-300'}`}>{patientMsg.sender_name}</span>
+                    {unread > 0 && <span className="px-2 py-0.5 bg-[#3B6FE8] text-white text-xs rounded-full">{unread}</span>}
+                  </div>
                   <p className="text-gray-500 text-xs sm:text-sm truncate mt-0.5">{messages.find(m => m.conversation_id === convId)?.content}</p>
                 </button>
               );
@@ -467,64 +560,79 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
           </div>
         </div>
 
-        {/* Chat area */}
         <div className="flex-1 flex flex-col min-h-0">
           {selectedConversation ? (
             <>
-              {/* Header */}
-              <div className="p-3 sm:p-4 border-b border-[#0A0F2C] bg-[#0A0F2C]/50 shrink-0">
-                <h3 className="text-white font-medium text-sm sm:text-base">
-                  {messages.find(m => m.conversation_id === selectedConversation)?.sender_name}
-                </h3>
+              <div className="p-3 sm:p-4 border-b border-[#0A0F2C] bg-[#0A0F2C]/50 shrink-0 flex items-center justify-between">
+                <div>
+                  <h3 className="text-white font-medium text-sm sm:text-base">{messages.find(m => m.conversation_id === selectedConversation)?.sender_name}</h3>
+                  {typing && <p className="text-[#3B6FE8] text-xs animate-pulse">En train d'écrire...</p>}
+                </div>
+                <div className="relative">
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Rechercher..." className="w-32 sm:w-40 px-3 py-1 bg-[#141B3D] border border-[#0A0F2C] rounded-lg text-white text-xs focus:outline-none focus:border-[#3B6FE8]" />
+                  {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2"><X className="w-3 h-3 text-gray-500" /></button>}
+                </div>
               </div>
 
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4 min-h-0">
-                {convMessages.map(msg => (
-                  <div key={msg.id} className={`flex ${msg.sender_type === 'doctor' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[85%] sm:max-w-[75%] p-3 rounded-2xl ${msg.sender_type === 'doctor' ? 'bg-[#3B6FE8] text-white rounded-br-sm' : 'bg-[#0A0F2C] text-gray-300 rounded-bl-sm'}`}>
-                      {msg.content !== '[Fichier joint]' && (
-                        <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-anywhere">{msg.content}</p>
-                      )}
+              <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4 min-h-0" onClick={() => setContextMenu(null)}>
+                {filteredMessages.map(msg => (
+                  <div key={msg.id} className={`flex ${msg.sender_type === 'doctor' ? 'justify-end' : 'justify-start'} relative group`}>
+                    <div className={`max-w-[85%] sm:max-w-[75%] p-3 rounded-2xl relative ${msg.sender_type === 'doctor' ? 'bg-[#3B6FE8] text-white rounded-br-sm' : 'bg-[#0A0F2C] text-gray-300 rounded-bl-sm'} ${msg.deleted_at ? 'opacity-50 italic' : ''}`}>
+                      {msg.reply_to_id && <div className={`mb-2 pl-2 border-l-2 text-xs ${msg.sender_type === 'doctor' ? 'border-blue-200 text-blue-100' : 'border-gray-500 text-gray-500'}`}>↳ {msg.reply_to?.content?.substring(0, 30) || 'Message...'}</div>}
+                      <button onClick={(e) => { e.stopPropagation(); setContextMenu({ messageId: msg.id, x: e.clientX, y: e.clientY }); }} className="absolute top-1 right-1 p-1 rounded hover:bg-white/10 text-white/50 hover:text-white">
+                        <MoreVertical className="w-4 h-4" />
+                      </button>
+                      {msg.content !== '[Fichier joint]' && msg.content !== '[Message supprimé]' && <p className="text-sm whitespace-pre-wrap break-words pr-6">{msg.content}</p>}
+                      {(msg.content === '[Fichier joint]' || msg.content === '[Message supprimé]') && <p className="text-sm italic opacity-70 pr-6">{msg.content}</p>}
                       {renderAttachment(msg)}
-                      <p className={`text-[10px] sm:text-xs mt-1 sm:mt-2 ${msg.sender_type === 'doctor' ? 'text-blue-100/70' : 'text-gray-500'}`}>
-                        {new Date(msg.created_at).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                      </p>
+                      <div className={`flex items-center justify-end gap-1 mt-1 ${msg.sender_type === 'doctor' ? 'text-blue-100/70' : 'text-gray-500'}`}>
+                        <span className="text-[10px] sm:text-xs">{new Date(msg.created_at).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                        {msg.is_edited && <span className="text-[10px]">(modifié)</span>}
+                        {renderStatus(msg)}
+                      </div>
                     </div>
+
+                    {contextMenu?.messageId === msg.id && (
+                      <div className="fixed z-50 bg-[#1a2147] border border-[#3B6FE8]/30 rounded-lg shadow-lg py-1 min-w-[130px]" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
+                        <button onClick={() => { setReplyingTo(msg); setContextMenu(null); }} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-xs"><Reply className="w-4 h-4" /> Répondre</button>
+                        <button onClick={() => handleCopy(msg.content)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-xs"><Copy className="w-4 h-4" /> Copier</button>
+                        {msg.sender_type === 'doctor' && !msg.deleted_at && (
+                          <>
+                            <button onClick={() => handleEdit(msg)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-xs"><Edit2 className="w-4 h-4" /> Modifier</button>
+                            <button onClick={() => handleDelete(msg)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-red-500/20 text-red-400 text-xs"><Trash2 className="w-4 h-4" /> Supprimer</button>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
                 <div ref={messagesEndRef} className="h-1" />
               </div>
 
-              {/* Input */}
+              {(replyingTo || editingMessage) && (
+                <div className="px-4 py-2 bg-[#0A0F2C] border-t border-[#141B3D] flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs">
+                    {replyingTo && <><CornerDownLeft className="w-4 h-4 text-[#3B6FE8]" /><span className="text-gray-400">Répondre à: </span><span className="text-gray-300 truncate max-w-[150px]">{replyingTo.content.substring(0, 30)}...</span></>}
+                    {editingMessage && <><Edit2 className="w-4 h-4 text-yellow-400" /><span className="text-gray-400">Modifier le message</span></>}
+                  </div>
+                  <button onClick={() => { setReplyingTo(null); setEditingMessage(null); setReplyContent(''); }} className="p-1 hover:bg-[#141B3D] rounded"><X className="w-4 h-4 text-gray-500" /></button>
+                </div>
+              )}
+
               <form onSubmit={handleReply} className="p-3 sm:p-4 border-t border-[#0A0F2C] flex gap-2 shrink-0">
-                <label className={`p-2 sm:p-2.5 bg-[#0A0F2C] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${uploading ? 'opacity-50 cursor-wait' : ''}`} title="Joindre un fichier">
+                <label className={`p-2 sm:p-2.5 bg-[#0A0F2C] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${uploading ? 'opacity-50' : ''}`}>
                   <input type="file" accept="image/*,.pdf,.doc,.docx" onChange={handleFileUpload} className="hidden" disabled={sending || uploading} />
-                  {uploading ? <RefreshCw className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
+                  {uploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
                 </label>
-                <input
-                  type="text"
-                  value={replyContent}
-                  onChange={e => setReplyContent(e.target.value)}
-                  placeholder="Votre réponse..."
-                  className="flex-1 min-w-0 px-3 sm:px-4 py-2 sm:py-2.5 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8] transition-colors text-sm"
-                  disabled={sending || uploading}
-                />
-                <button
-                  type="submit"
-                  disabled={sending || uploading || !replyContent.trim()}
-                  className="p-2 sm:p-2.5 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed shrink-0 transition-colors"
-                >
-                  {sending ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                <input ref={inputRef} type="text" value={replyContent} onChange={e => { setReplyContent(e.target.value); sendTypingIndicator(); }} placeholder={editingMessage ? "Modifier..." : "Répondre..."} className="flex-1 min-w-0 px-3 sm:px-4 py-2 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]" disabled={sending || uploading} />
+                <button type="submit" disabled={sending || uploading || !replyContent.trim()} className="p-2 sm:p-2.5 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0">
+                  {sending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
                 </button>
               </form>
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center p-4">
-              <div className="text-center">
-                <MessageSquare className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-                <p className="text-gray-500 text-sm">Selectionnez une conversation</p>
-              </div>
+              <div className="text-center"><MessageSquare className="w-12 h-12 text-gray-700 mx-auto mb-3" /><p className="text-gray-500 text-sm">Sélectionnez une conversation</p></div>
             </div>
           )}
         </div>

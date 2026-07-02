@@ -24,6 +24,27 @@ export interface Message {
   attachment_type?: 'image' | 'pdf' | 'word' | 'other';
   created_at: string;
   read_at?: string;
+  reply_to_id?: string;
+  reply_to?: Message;
+  is_edited?: boolean;
+  edited_at?: string;
+  deleted_at?: string;
+  status?: 'sent' | 'delivered' | 'read';
+}
+
+export interface TypingIndicator {
+  id: string;
+  conversation_id: string;
+  user_type: 'patient' | 'doctor';
+  user_name: string;
+  created_at: string;
+}
+
+export interface ConversationReadStatus {
+  id: string;
+  conversation_id: string;
+  user_type: 'patient' | 'doctor';
+  last_read_at: string;
 }
 
 export interface Document {
