@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Paperclip, User, ArrowLeft, MessageCircle, FileText, CheckCircle, Image as ImageIcon, File, Download } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { uploadToCloudinary, getFileType, validateFile } from '../lib/storage';
+import { uploadToCloudinary, getFileType, isAllowedFile, validateFile } from '../lib/storage';
 import type { Message } from '../types';
 
 function generateConversationCode(): string {
@@ -109,7 +109,7 @@ export function MessagingPage() {
     try {
       const result = await uploadToCloudinary(file, 'messages');
       if (result) {
-        await supabase.from('messages').insert({
+        const { error: insertError, data } = await supabase.from('messages').insert({
           conversation_id: messages[0].conversation_id,
           sender_type: 'patient',
           sender_name: userName,
@@ -118,11 +118,20 @@ export function MessagingPage() {
           attachment_url: result.secure_url,
           attachment_name: file.name,
           attachment_type: getFileType(file),
-        });
+        }).select().single();
+
+        if (insertError) {
+          console.error('Insert error:', insertError);
+          alert('Erreur lors de l\'enregistrement du fichier: ' + insertError.message);
+        } else if (data) {
+          setMessages(prev => [...prev, data]);
+        }
+      } else {
+        alert('Erreur lors de l\'upload du fichier');
       }
     } catch (err) {
-      console.error(err);
-      alert('Erreur lors de l\'envoi du fichier');
+      console.error('Upload error:', err);
+      alert('Erreur lors de l\'envoi du fichier: ' + (err instanceof Error ? err.message : 'Erreur inconnue'));
     }
     setSubmitting(false);
     e.target.value = '';
