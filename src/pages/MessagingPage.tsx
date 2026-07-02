@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Paperclip, User, ArrowLeft, MessageCircle, FileText, CheckCircle, Image as ImageIcon, File, Download } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { uploadToCloudinary, getFileType, isAllowedFile } from '../lib/cloudinary';
+import { uploadToCloudinary, getFileType, validateFile } from '../lib/storage';
 import type { Message } from '../types';
 
 function generateConversationCode(): string {

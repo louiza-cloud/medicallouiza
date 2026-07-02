@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { uploadToCloudinary, getFileType, isAllowedFile } from '../../lib/cloudinary';
+import { uploadToCloudinary, getFileType, isAllowedFile, validateFile } from '../../lib/storage';
 import type { Appointment, Message, Document, Testimonial, TimeSlot } from '../../types';
 
 type Tab = 'agenda' | 'reservations' | 'messagerie' | 'bibliotheque' | 'teleconsultation' | 'temoignages' | 'parametres';
