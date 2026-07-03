@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download, Reply, Edit2, Copy, MoreVertical, Check, CheckCheck, X, Search, Loader2, CornerDownLeft, Forward } from 'lucide-react';
+import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download, Reply, Edit2, Copy, MoreVertical, Check, CheckCheck, X, Search, Loader2, CornerDownLeft, Forward, ZoomIn } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { uploadToCloudinary, getFileType, isAllowedFile, validateFile } from '../../lib/storage';
+import { uploadMultipleFiles, getFileType, isAllowedFile, createFilePreview, validateFiles, formatFileSize, FilePreview } from '../../lib/storage';
+import { FilePreviewModal } from '../../components/FilePreviewModal';
+import { FileUploadPreview } from '../../components/FileUploadPreview';
 import type { Appointment, Message, Document, Testimonial, TimeSlot, TypingIndicator } from '../../types';
 
 type Tab = 'agenda' | 'reservations' | 'messagerie' | 'bibliotheque' | 'teleconsultation' | 'temoignages' | 'parametres';
@@ -322,41 +324,37 @@ function ReservationsTab({ appointments, setAppointments }: { appointments: Appo
 function MessagerieTab({ messages, setMessages, selectedConversation, setSelectedConversation }: { messages: Message[]; setMessages: (m: Message[]) => void; selectedConversation: string | null; setSelectedConversation: (id: string | null) => void }) {
   const [replyContent, setReplyContent] = useState('');
   const [sending, setSending] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [contextMenu, setContextMenu] = useState<{ messageId: string; x: number; y: number } | null>(null);
   const [typing, setTyping] = useState<TypingIndicator | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [pendingFiles, setPendingFiles] = useState<FilePreview[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<Map<string, number>>(new Map());
+  const [uploadStatus, setUploadStatus] = useState<Map<string, 'pending' | 'uploading' | 'complete' | 'error'>>(new Map());
+  const [uploadErrors, setUploadErrors] = useState<Map<string, string>>(new Map());
+  const [isUploading, setIsUploading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [previewFiles, setPreviewFiles] = useState<Array<{ url: string; name: string; type: string; size?: number }>>([]);
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const [showPreview, setShowPreview] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
 
   const conversations = Array.from(new Set(messages.map(m => m.conversation_id)));
   const convMessages = messages.filter(m => m.conversation_id === selectedConversation && !m.deleted_at);
 
   const scrollToBottom = useCallback(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
+    if (messagesEndRef.current) messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, []);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [convMessages, scrollToBottom]);
+  useEffect(() => { scrollToBottom(); }, [convMessages, scrollToBottom]);
 
-  // Mark messages as read when viewing
   useEffect(() => {
     if (selectedConversation && convMessages.length > 0) {
-      supabase.rpc('mark_messages_read', {
-        p_conversation_id: selectedConversation,
-        p_user_type: 'doctor'
-      }).then(() => {
-        setMessages(prev => prev.map(m =>
-          m.conversation_id === selectedConversation && m.sender_type === 'patient' && !m.read_at
-            ? { ...m, status: 'read', read_at: new Date().toISOString() }
-            : m
-        ));
-      });
+      supabase.rpc('mark_messages_read', { p_conversation_id: selectedConversation, p_user_type: 'doctor' });
     }
   }, [selectedConversation, convMessages.length, setMessages]);
 
@@ -365,25 +363,15 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
     const channel = supabase
       .channel(`admin-messages-${selectedConversation}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConversation}` },
-        (payload) => {
-          setMessages(prev => {
-            if (prev.some(m => m.id === payload.new.id)) return prev;
-            return [...prev, payload.new as Message];
-          });
-        })
+        (payload) => { setMessages(prev => prev.some(m => m.id === payload.new.id) ? prev : [...prev, payload.new as Message]); })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConversation}` },
-        (payload) => {
-          setMessages(prev => prev.map(m => m.id === payload.new.id ? payload.new as Message : m));
-        })
+        (payload) => { setMessages(prev => prev.map(m => m.id === payload.new.id ? payload.new as Message : m)); })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selectedConversation}` },
-        (payload) => {
-          setMessages(prev => prev.filter(m => m.id !== payload.old.id));
-        })
+        (payload) => { setMessages(prev => prev.filter(m => m.id !== payload.old.id)); })
       .subscribe();
     return () => { channel.unsubscribe(); };
   }, [selectedConversation, setMessages]);
 
-  // Typing indicator subscription
   useEffect(() => {
     if (!selectedConversation) return;
     const channel = supabase
@@ -391,10 +379,7 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'typing_indicators', filter: `conversation_id=eq.${selectedConversation}` },
         (payload) => {
           const data = payload.new as TypingIndicator;
-          if (data.user_type === 'patient') {
-            setTyping(data);
-            setTimeout(() => setTyping(null), 3000);
-          }
+          if (data.user_type === 'patient') { setTyping(data); setTimeout(() => setTyping(null), 3000); }
         })
       .subscribe();
     return () => { channel.unsubscribe(); };
@@ -403,122 +388,132 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
   const sendTypingIndicator = useCallback(async () => {
     if (!selectedConversation) return;
     await supabase.from('typing_indicators').upsert({
-      conversation_id: selectedConversation,
-      user_type: 'doctor',
-      user_name: 'Dr. Djalane',
-      created_at: new Date().toISOString()
+      conversation_id: selectedConversation, user_type: 'doctor', user_name: 'Dr. Djalane', created_at: new Date().toISOString()
     }, { onConflict: 'conversation_id,user_type' });
   }, [selectedConversation]);
 
+  const processFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    const validation = validateFiles(fileArray);
+    if (!validation.valid) { validation.errors.forEach(err => alert(err)); return; }
+    const previews: FilePreview[] = [];
+    for (const file of fileArray) previews.push(await createFilePreview(file));
+    setPendingFiles(prev => [...prev, ...previews]);
+  }, []);
+
+  const removePendingFile = useCallback((index: number) => {
+    setPendingFiles(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleSendFiles = async () => {
+    if (pendingFiles.length === 0 || !selectedConversation) return;
+    setIsUploading(true);
+    const files = pendingFiles.map(p => p.file);
+    try {
+      const results = await uploadMultipleFiles(files, 'messages', (progress) => {
+        const key = `file-${progress.fileIndex}`;
+        setUploadProgress(prev => new Map(prev).set(key, progress.progress));
+        setUploadStatus(prev => new Map(prev).set(key, progress.status));
+        if (progress.error) setUploadErrors(prev => new Map(prev).set(key, progress.error));
+      });
+      for (const result of results) {
+        const msgData: Record<string, unknown> = {
+          conversation_id: selectedConversation, sender_type: 'doctor', sender_name: 'Dr. Djalane',
+          content: '[Fichier joint]', attachment_url: result.url, attachment_name: result.name, attachment_type: result.type,
+        };
+        if (replyingTo) msgData.reply_to_id = replyingTo.id;
+        const { data, error } = await supabase.from('messages').insert(msgData).select().single();
+        if (data && !error) setMessages(prev => [...prev, data]);
+      }
+      setPendingFiles([]); setUploadProgress(new Map()); setUploadStatus(new Map()); setUploadErrors(new Map()); setReplyingTo(null);
+    } catch (err) { console.error(err); alert('Erreur'); }
+    setIsUploading(false);
+  };
+
+  const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(true); }, []);
+  const handleDragLeave = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(false); }, []);
+  const handleDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(false); if (e.dataTransfer.files.length > 0) processFiles(e.dataTransfer.files); }, [processFiles]);
+
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items; if (!items) return;
+      const files: File[] = [];
+      for (const item of items) { if (item.type.startsWith('image/')) { const file = item.getAsFile(); if (file) files.push(file); } }
+      if (files.length > 0) { e.preventDefault(); await processFiles(files); }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [processFiles]);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) processFiles(e.target.files);
+    e.target.value = '';
+  };
+
   const handleReply = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pendingFiles.length > 0) { await handleSendFiles(); return; }
     if (!replyContent.trim() || !selectedConversation) return;
-
     const content = replyContent.trim();
     setReplyContent('');
 
     if (editingMessage) {
-      const { error } = await supabase.from('messages').update({
-        content,
-        is_edited: true,
-        edited_at: new Date().toISOString()
-      }).eq('id', editingMessage.id);
-
-      if (!error) {
-        setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content, is_edited: true, edited_at: new Date().toISOString() } : m));
-      }
+      const { error } = await supabase.from('messages').update({ content, is_edited: true, edited_at: new Date().toISOString() }).eq('id', editingMessage.id);
+      if (!error) setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content, is_edited: true, edited_at: new Date().toISOString() } : m));
       setEditingMessage(null);
     } else {
       setSending(true);
-      const msgData: Record<string, unknown> = {
-        conversation_id: selectedConversation,
-        sender_type: 'doctor',
-        sender_name: 'Dr. Djalane',
-        content,
-      };
+      const msgData: Record<string, unknown> = { conversation_id: selectedConversation, sender_type: 'doctor', sender_name: 'Dr. Djalane', content };
       if (replyingTo) msgData.reply_to_id = replyingTo.id;
-
       const { data, error } = await supabase.from('messages').insert(msgData).select().single();
       if (data && !error) setMessages(prev => [...prev, data]);
       if (error) setReplyContent(content);
-      setReplyingTo(null);
-      setSending(false);
+      setReplyingTo(null); setSending(false);
     }
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !selectedConversation) return;
-    if (file.size > 10 * 1024 * 1024) { alert('Fichier trop volumineux'); e.target.value = ''; return; }
-    if (!isAllowedFile(file)) { alert('Type non autorisé'); e.target.value = ''; return; }
-
-    setUploading(true);
-    try {
-      const result = await uploadToCloudinary(file, 'messages');
-      if (result) {
-        const msgData: Record<string, unknown> = {
-          conversation_id: selectedConversation,
-          sender_type: 'doctor',
-          sender_name: 'Dr. Djalane',
-          content: '[Fichier joint]',
-          attachment_url: result.secure_url,
-          attachment_name: file.name,
-          attachment_type: getFileType(file),
-        };
-        if (replyingTo) msgData.reply_to_id = replyingTo.id;
-
-        const { data, error } = await supabase.from('messages').insert(msgData).select().single();
-        if (data && !error) setMessages(prev => [...prev, data]);
-        setReplyingTo(null);
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Erreur');
-    }
-    setUploading(false);
-    e.target.value = '';
   };
 
   const handleEdit = (msg: Message) => {
     if (msg.sender_type !== 'doctor') return;
-    setEditingMessage(msg);
-    setReplyContent(msg.content);
-    setReplyingTo(null);
-    inputRef.current?.focus();
+    setEditingMessage(msg); setReplyContent(msg.content); setReplyingTo(null); inputRef.current?.focus();
   };
-
   const handleDelete = async (msg: Message) => {
     if (msg.sender_type !== 'doctor') return;
     if (!confirm('Supprimer ?')) return;
-
-    await supabase.from('messages').update({
-      deleted_at: new Date().toISOString(),
-      content: '[Message supprimé]'
-    }).eq('id', msg.id);
-
+    await supabase.from('messages').update({ deleted_at: new Date().toISOString(), content: '[Message supprimé]' }).eq('id', msg.id);
     setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, deleted_at: new Date().toISOString(), content: '[Message supprimé]' } : m));
     setContextMenu(null);
   };
+  const handleCopy = (content: string) => { navigator.clipboard.writeText(content); setContextMenu(null); };
 
-  const handleCopy = (content: string) => {
-    navigator.clipboard.writeText(content);
-    setContextMenu(null);
+  const openGallery = (msg: Message, allMsgs: Message[]) => {
+    const images = allMsgs.filter(m => m.attachment_type === 'image' && m.attachment_url);
+    const index = images.findIndex(m => m.id === msg.id);
+    setPreviewFiles(images.map(m => ({ url: m.attachment_url!, name: m.attachment_name || 'Image', type: 'image' })));
+    setPreviewIndex(index >= 0 ? index : 0); setShowPreview(true);
   };
 
-  const renderAttachment = (msg: Message) => {
+  const renderAttachment = (msg: Message, allMsgs: Message[]) => {
     if (!msg.attachment_url) return null;
     if (msg.attachment_type === 'image') {
+      const imagesInChat = allMsgs.filter(m => m.attachment_type === 'image' && m.attachment_url);
       return (
-        <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2 rounded-lg overflow-hidden">
-          <img src={msg.attachment_url} alt={msg.attachment_name || 'Image'} className="max-w-full max-h-48 object-contain rounded-lg" loading="lazy" />
-        </a>
+        <div className="mt-2 relative group">
+          <button onClick={() => openGallery(msg, allMsgs)} className="block rounded-lg overflow-hidden">
+            <img src={msg.attachment_url} alt={msg.attachment_name || 'Image'} className="max-w-full max-h-48 object-contain rounded-lg" loading="lazy" />
+          </button>
+          {imagesInChat.length > 1 && (
+            <span className="absolute bottom-2 right-2 px-2 py-1 bg-black/60 rounded text-white text-xs flex items-center gap-1">
+              <ImageIcon className="w-3 h-3" /> {imagesInChat.findIndex(m => m.id === msg.id) + 1}/{imagesInChat.length}
+            </span>
+          )}
+        </div>
       );
     }
     const Icon = msg.attachment_type === 'pdf' ? FileText : File;
     return (
-      <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" download className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20">
-        <Icon className="w-5 h-5 shrink-0" />
-        <span className="text-sm truncate">{msg.attachment_name || 'Document'}</span>
+      <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" download={msg.attachment_name} className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20">
+        <Icon className={`w-5 h-5 shrink-0 ${msg.attachment_type === 'pdf' ? 'text-red-400' : 'text-blue-400'}`} />
+        <span className="text-sm truncate flex-1">{msg.attachment_name || 'Document'}</span>
         <Download className="w-4 h-4 opacity-60" />
       </a>
     );
@@ -532,14 +527,30 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
   };
 
   const filteredMessages = searchQuery ? convMessages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())) : convMessages;
-
   const getUnreadCount = (convId: string) => messages.filter(m => m.conversation_id === convId && m.sender_type === 'patient' && !m.read_at).length;
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-      <div className="bg-[#141B3D] border border-[#0A0F2C] rounded-xl h-[500px] sm:h-[600px] flex flex-col sm:flex-row">
+      <div
+        ref={dropZoneRef}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`bg-[#141B3D] border border-[#0A0F2C] rounded-xl h-[500px] sm:h-[600px] flex flex-col sm:flex-row relative ${isDragOver ? 'ring-2 ring-[#3B6FE8] ring-inset' : ''}`}
+      >
+        <AnimatePresence>
+          {isDragOver && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-30 bg-[#3B6FE8]/20 flex items-center justify-center">
+              <div className="bg-[#141B3D] px-6 py-4 rounded-xl border-2 border-dashed border-[#3B6FE8] flex items-center gap-3">
+                <Upload className="w-6 h-6 text-[#3B6FE8]" />
+                <span className="text-white font-medium">Déposez vos fichiers ici</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className="w-full sm:w-1/3 border-b sm:border-b-0 sm:border-r border-[#0A0F2C] overflow-y-auto max-h-[200px] sm:max-h-none">
-          <div className="p-3 sm:p-4 border-b border-[#0A0F2C] sticky top-0 bg-[#141B3D] flex items-center justify-between">
+          <div className="p-3 sm:p-4 border-b border-[#0A0F2C] sticky top-0 bg-[#141B3D]">
             <h2 className="text-white font-medium text-sm sm:text-base">Conversations</h2>
           </div>
           <div className="divide-y divide-[#0A0F2C]">
@@ -568,23 +579,19 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
                   <h3 className="text-white font-medium text-sm sm:text-base">{messages.find(m => m.conversation_id === selectedConversation)?.sender_name}</h3>
                   {typing && <p className="text-[#3B6FE8] text-xs animate-pulse">En train d'écrire...</p>}
                 </div>
-                <div className="relative">
-                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Rechercher..." className="w-32 sm:w-40 px-3 py-1 bg-[#141B3D] border border-[#0A0F2C] rounded-lg text-white text-xs focus:outline-none focus:border-[#3B6FE8]" />
-                  {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2"><X className="w-3 h-3 text-gray-500" /></button>}
-                </div>
+                <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Rechercher..." className="w-32 sm:w-40 px-3 py-1 bg-[#141B3D] border border-[#0A0F2C] rounded-lg text-white text-xs focus:outline-none focus:border-[#3B6FE8]" />
               </div>
 
               <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4 min-h-0" onClick={() => setContextMenu(null)}>
                 {filteredMessages.map(msg => (
-                  <div key={msg.id} className={`flex ${msg.sender_type === 'doctor' ? 'justify-end' : 'justify-start'} relative group`}>
+                  <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex ${msg.sender_type === 'doctor' ? 'justify-end' : 'justify-start'} relative group`}>
                     <div className={`max-w-[85%] sm:max-w-[75%] p-3 rounded-2xl relative ${msg.sender_type === 'doctor' ? 'bg-[#3B6FE8] text-white rounded-br-sm' : 'bg-[#0A0F2C] text-gray-300 rounded-bl-sm'} ${msg.deleted_at ? 'opacity-50 italic' : ''}`}>
-                      {msg.reply_to_id && <div className={`mb-2 pl-2 border-l-2 text-xs ${msg.sender_type === 'doctor' ? 'border-blue-200 text-blue-100' : 'border-gray-500 text-gray-500'}`}>↳ {msg.reply_to?.content?.substring(0, 30) || 'Message...'}</div>}
-                      <button onClick={(e) => { e.stopPropagation(); setContextMenu({ messageId: msg.id, x: e.clientX, y: e.clientY }); }} className="absolute top-1 right-1 p-1 rounded hover:bg-white/10 text-white/50 hover:text-white">
+                      <button onClick={(e) => { e.stopPropagation(); setContextMenu({ messageId: msg.id, x: e.clientX, y: e.clientY }); }} className="absolute top-1 right-1 p-1 rounded hover:bg-white/10 text-white/50">
                         <MoreVertical className="w-4 h-4" />
                       </button>
                       {msg.content !== '[Fichier joint]' && msg.content !== '[Message supprimé]' && <p className="text-sm whitespace-pre-wrap break-words pr-6">{msg.content}</p>}
                       {(msg.content === '[Fichier joint]' || msg.content === '[Message supprimé]') && <p className="text-sm italic opacity-70 pr-6">{msg.content}</p>}
-                      {renderAttachment(msg)}
+                      {renderAttachment(msg, messages)}
                       <div className={`flex items-center justify-end gap-1 mt-1 ${msg.sender_type === 'doctor' ? 'text-blue-100/70' : 'text-gray-500'}`}>
                         <span className="text-[10px] sm:text-xs">{new Date(msg.created_at).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
                         {msg.is_edited && <span className="text-[10px]">(modifié)</span>}
@@ -604,10 +611,12 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
                         )}
                       </div>
                     )}
-                  </div>
+                  </motion.div>
                 ))}
                 <div ref={messagesEndRef} className="h-1" />
               </div>
+
+              <FileUploadPreview files={pendingFiles} uploadProgress={uploadProgress} uploadStatus={uploadStatus} uploadErrors={uploadErrors} onRemove={removePendingFile} />
 
               {(replyingTo || editingMessage) && (
                 <div className="px-4 py-2 bg-[#0A0F2C] border-t border-[#141B3D] flex items-center justify-between">
@@ -620,13 +629,13 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
               )}
 
               <form onSubmit={handleReply} className="p-3 sm:p-4 border-t border-[#0A0F2C] flex gap-2 shrink-0">
-                <label className={`p-2 sm:p-2.5 bg-[#0A0F2C] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${uploading ? 'opacity-50' : ''}`}>
-                  <input type="file" accept="image/*,.pdf,.doc,.docx" onChange={handleFileUpload} className="hidden" disabled={sending || uploading} />
-                  {uploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
+                <label className={`p-2 sm:p-2.5 bg-[#0A0F2C] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${isUploading ? 'opacity-50' : ''}`}>
+                  <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx" multiple onChange={handleFileSelect} className="hidden" disabled={sending || isUploading} />
+                  {isUploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
                 </label>
-                <input ref={inputRef} type="text" value={replyContent} onChange={e => { setReplyContent(e.target.value); sendTypingIndicator(); }} placeholder={editingMessage ? "Modifier..." : "Répondre..."} className="flex-1 min-w-0 px-3 sm:px-4 py-2 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]" disabled={sending || uploading} />
-                <button type="submit" disabled={sending || uploading || !replyContent.trim()} className="p-2 sm:p-2.5 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0">
-                  {sending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                <input ref={inputRef} type="text" value={replyContent} onChange={e => { setReplyContent(e.target.value); sendTypingIndicator(); }} placeholder={pendingFiles.length > 0 ? `${pendingFiles.length} fichier(s)` : "Répondre..."} className="flex-1 min-w-0 px-3 sm:px-4 py-2 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]" disabled={sending || isUploading} />
+                <button type="submit" disabled={sending || isUploading || (!replyContent.trim() && pendingFiles.length === 0)} className="p-2 sm:p-2.5 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0">
+                  {sending || isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
                 </button>
               </form>
             </>
@@ -637,6 +646,12 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
           )}
         </div>
       </div>
+
+      <AnimatePresence>
+        {showPreview && previewFiles.length > 0 && (
+          <FilePreviewModal files={previewFiles} initialIndex={previewIndex} onClose={() => setShowPreview(false)} />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
