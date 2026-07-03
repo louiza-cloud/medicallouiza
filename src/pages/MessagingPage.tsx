@@ -3,11 +3,12 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send, Paperclip, User, ArrowLeft, MessageCircle, FileText, CheckCircle, File, Download,
   Reply, Edit2, Trash2, Copy, Forward, Search, X, MoreVertical, Check, CheckCheck,
-  Loader2, CornerDownLeft, ZoomIn, Image as ImageIcon, AlertCircle, Upload
+  Loader2, CornerDownLeft, ZoomIn, Image as ImageIcon, AlertCircle, Upload, Mic
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
   uploadMultipleFiles,
+  uploadFile,
   getFileType,
   isAllowedFile,
   createFilePreview,
@@ -17,6 +18,7 @@ import {
 } from '../lib/storage';
 import { FilePreviewModal } from '../components/FilePreviewModal';
 import { FileUploadPreview } from '../components/FileUploadPreview';
+import { VoiceRecorder, AudioPlayer } from '../components/VoiceRecorder';
 import type { Message, TypingIndicator } from '../types';
 
 function generateConversationCode(): string {
@@ -73,6 +75,9 @@ export function MessagingPage() {
   const [previewFiles, setPreviewFiles] = useState<Array<{ url: string; name: string; type: string; size?: number }>>([]);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [showPreview, setShowPreview] = useState(false);
+
+  // Voice recording
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -300,6 +305,40 @@ export function MessagingPage() {
     e.target.value = '';
   };
 
+  // Voice message handling
+  const handleVoiceSend = async (audioBlob: Blob, duration: number) => {
+    if (messages.length === 0) return;
+
+    setIsUploading(true);
+    try {
+      const file = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+      const result = await uploadFile(file, 'messages');
+      if (result) {
+        const msgData: Record<string, unknown> = {
+          conversation_id: messages[0].conversation_id,
+          sender_type: 'patient',
+          sender_name: userName,
+          sender_email: userEmail,
+          content: '[Message vocal]',
+          attachment_url: result.url,
+          attachment_name: 'Message vocal',
+          attachment_type: 'audio',
+          attachment_duration: Math.round(duration),
+        };
+        if (replyingTo) msgData.reply_to_id = replyingTo.id;
+
+        const { data, error } = await supabase.from('messages').insert(msgData).select().single();
+        if (data && !error) setMessages(prev => [...prev, data]);
+        setReplyingTo(null);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Erreur lors de l\'envoi du message vocal');
+    }
+    setIsUploading(false);
+    setShowVoiceRecorder(false);
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (pendingFiles.length > 0) {
@@ -364,6 +403,18 @@ export function MessagingPage() {
 
   const renderAttachment = (msg: Message, allMsgs: Message[]) => {
     if (!msg.attachment_url) return null;
+
+    if (msg.attachment_type === 'audio') {
+      return (
+        <div className="mt-2">
+          <AudioPlayer
+            src={msg.attachment_url}
+            duration={msg.attachment_duration}
+            isOwn={msg.sender_type === 'patient'}
+          />
+        </div>
+      );
+    }
 
     if (msg.attachment_type === 'image') {
       const imagesInChat = allMsgs.filter(m => m.attachment_type === 'image' && m.attachment_url);
@@ -618,25 +669,49 @@ export function MessagingPage() {
                   )}
                 </AnimatePresence>
 
-                {/* Input */}
-                <form onSubmit={handleSendMessage} className="p-3 sm:p-4 bg-[#0A0F2C] border-t border-[#141B3D] flex gap-2 sm:gap-3 shrink-0">
-                  <label className={`p-2 sm:p-3 bg-[#141B3D] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${isUploading ? 'opacity-50' : ''}`} title="Joindre des fichiers">
-                    <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx" multiple onChange={handleFileSelect} className="hidden" disabled={isUploading || submitting} />
-                    {isUploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
-                  </label>
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={newMessage}
-                    onChange={e => { setNewMessage(e.target.value); sendTypingIndicator(); }}
-                    placeholder={pendingFiles.length > 0 ? `${pendingFiles.length} fichier${pendingFiles.length > 1 ? 's' : ''} à envoyer` : "Votre message... (ou collez une image)"}
-                    className="flex-1 min-w-0 bg-[#141B3D] border border-[#0A0F2C] rounded-lg px-3 sm:px-4 py-2 sm:py-3 text-white placeholder-gray-500 focus:outline-none focus:border-[#3B6FE8] text-sm sm:text-base"
-                    disabled={submitting || isUploading}
-                  />
-                  <button type="submit" disabled={(!newMessage.trim() && pendingFiles.length === 0) || submitting || isUploading} className="p-2 sm:p-3 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0 transition-colors">
-                    {submitting || isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                  </button>
-                </form>
+                {/* Voice recorder or Input */}
+                <AnimatePresence mode="wait">
+                  {showVoiceRecorder ? (
+                    <VoiceRecorder
+                      onSend={handleVoiceSend}
+                      onCancel={() => setShowVoiceRecorder(false)}
+                    />
+                  ) : (
+                    <motion.form
+                      key="input"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onSubmit={handleSendMessage}
+                      className="p-3 sm:p-4 bg-[#0A0F2C] border-t border-[#141B3D] flex gap-2 sm:gap-3 shrink-0"
+                    >
+                      <label className={`p-2 sm:p-3 bg-[#141B3D] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${isUploading ? 'opacity-50' : ''}`} title="Joindre des fichiers">
+                        <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx" multiple onChange={handleFileSelect} className="hidden" disabled={isUploading || submitting} />
+                        {isUploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
+                      </label>
+                      <input
+                        ref={inputRef}
+                        type="text"
+                        value={newMessage}
+                        onChange={e => { setNewMessage(e.target.value); sendTypingIndicator(); }}
+                        placeholder={pendingFiles.length > 0 ? `${pendingFiles.length} fichier${pendingFiles.length > 1 ? 's' : ''} à envoyer` : "Votre message..."}
+                        className="flex-1 min-w-0 bg-[#141B3D] border border-[#0A0F2C] rounded-lg px-3 sm:px-4 py-2 sm:py-3 text-white placeholder-gray-500 focus:outline-none focus:border-[#3B6FE8] text-sm sm:text-base"
+                        disabled={submitting || isUploading}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowVoiceRecorder(true)}
+                        className="p-2 sm:p-3 bg-[#141B3D] hover:bg-[#1a2147] rounded-lg transition-colors shrink-0"
+                        title="Message vocal"
+                      >
+                        <Mic className="w-5 h-5 text-gray-400" />
+                      </button>
+                      <button type="submit" disabled={(!newMessage.trim() && pendingFiles.length === 0) || submitting || isUploading} className="p-2 sm:p-3 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0 transition-colors">
+                        {submitting || isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                      </button>
+                    </motion.form>
+                  )}
+                </AnimatePresence>
               </div>
             </motion.div>
           )}

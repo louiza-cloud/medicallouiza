@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download, Reply, Edit2, Copy, MoreVertical, Check, CheckCheck, X, Search, Loader2, CornerDownLeft, Forward, ZoomIn } from 'lucide-react';
+import { Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, Image as ImageIcon, File, Download, Reply, Edit2, Copy, MoreVertical, Check, CheckCheck, X, Search, Loader2, CornerDownLeft, Forward, ZoomIn, Mic } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { uploadMultipleFiles, getFileType, isAllowedFile, createFilePreview, validateFiles, formatFileSize, FilePreview } from '../../lib/storage';
+import { uploadMultipleFiles, uploadFile, getFileType, isAllowedFile, createFilePreview, validateFiles, formatFileSize, FilePreview } from '../../lib/storage';
 import { FilePreviewModal } from '../../components/FilePreviewModal';
 import { FileUploadPreview } from '../../components/FileUploadPreview';
+import { VoiceRecorder, AudioPlayer } from '../../components/VoiceRecorder';
 import type { Appointment, Message, Document, Testimonial, TimeSlot, TypingIndicator } from '../../types';
 
 type Tab = 'agenda' | 'reservations' | 'messagerie' | 'bibliotheque' | 'teleconsultation' | 'temoignages' | 'parametres';
@@ -338,6 +339,7 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
   const [previewFiles, setPreviewFiles] = useState<Array<{ url: string; name: string; type: string; size?: number }>>([]);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [showPreview, setShowPreview] = useState(false);
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -450,6 +452,38 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
     e.target.value = '';
   };
 
+  const handleVoiceSend = async (audioBlob: Blob, duration: number) => {
+    if (!selectedConversation) return;
+
+    setIsUploading(true);
+    try {
+      const file = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+      const result = await uploadFile(file, 'messages');
+      if (result) {
+        const msgData: Record<string, unknown> = {
+          conversation_id: selectedConversation,
+          sender_type: 'doctor',
+          sender_name: 'Dr. Djalane',
+          content: '[Message vocal]',
+          attachment_url: result.url,
+          attachment_name: 'Message vocal',
+          attachment_type: 'audio',
+          attachment_duration: Math.round(duration),
+        };
+        if (replyingTo) msgData.reply_to_id = replyingTo.id;
+
+        const { data, error } = await supabase.from('messages').insert(msgData).select().single();
+        if (data && !error) setMessages(prev => [...prev, data]);
+        setReplyingTo(null);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Erreur lors de l\'envoi du message vocal');
+    }
+    setIsUploading(false);
+    setShowVoiceRecorder(false);
+  };
+
   const handleReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (pendingFiles.length > 0) { await handleSendFiles(); return; }
@@ -494,6 +528,19 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
 
   const renderAttachment = (msg: Message, allMsgs: Message[]) => {
     if (!msg.attachment_url) return null;
+
+    if (msg.attachment_type === 'audio') {
+      return (
+        <div className="mt-2">
+          <AudioPlayer
+            src={msg.attachment_url}
+            duration={msg.attachment_duration}
+            isOwn={msg.sender_type === 'doctor'}
+          />
+        </div>
+      );
+    }
+
     if (msg.attachment_type === 'image') {
       const imagesInChat = allMsgs.filter(m => m.attachment_type === 'image' && m.attachment_url);
       return (
@@ -628,16 +675,32 @@ function MessagerieTab({ messages, setMessages, selectedConversation, setSelecte
                 </div>
               )}
 
-              <form onSubmit={handleReply} className="p-3 sm:p-4 border-t border-[#0A0F2C] flex gap-2 shrink-0">
-                <label className={`p-2 sm:p-2.5 bg-[#0A0F2C] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${isUploading ? 'opacity-50' : ''}`}>
-                  <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx" multiple onChange={handleFileSelect} className="hidden" disabled={sending || isUploading} />
-                  {isUploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
-                </label>
-                <input ref={inputRef} type="text" value={replyContent} onChange={e => { setReplyContent(e.target.value); sendTypingIndicator(); }} placeholder={pendingFiles.length > 0 ? `${pendingFiles.length} fichier(s)` : "Répondre..."} className="flex-1 min-w-0 px-3 sm:px-4 py-2 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]" disabled={sending || isUploading} />
-                <button type="submit" disabled={sending || isUploading || (!replyContent.trim() && pendingFiles.length === 0)} className="p-2 sm:p-2.5 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0">
-                  {sending || isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                </button>
-              </form>
+              <AnimatePresence mode="wait">
+                {showVoiceRecorder ? (
+                  <VoiceRecorder onSend={handleVoiceSend} onCancel={() => setShowVoiceRecorder(false)} />
+                ) : (
+                  <motion.form
+                    key="input"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onSubmit={handleReply}
+                    className="p-3 sm:p-4 border-t border-[#0A0F2C] flex gap-2 shrink-0"
+                  >
+                    <label className={`p-2 sm:p-2.5 bg-[#0A0F2C] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${isUploading ? 'opacity-50' : ''}`}>
+                      <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx" multiple onChange={handleFileSelect} className="hidden" disabled={sending || isUploading} />
+                      {isUploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
+                    </label>
+                    <input ref={inputRef} type="text" value={replyContent} onChange={e => { setReplyContent(e.target.value); sendTypingIndicator(); }} placeholder={pendingFiles.length > 0 ? `${pendingFiles.length} fichier(s)` : "Répondre..."} className="flex-1 min-w-0 px-3 sm:px-4 py-2 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]" disabled={sending || isUploading} />
+                    <button type="button" onClick={() => setShowVoiceRecorder(true)} className="p-2 sm:p-2.5 bg-[#0A0F2C] hover:bg-[#1a2147] rounded-lg transition-colors shrink-0" title="Message vocal">
+                      <Mic className="w-5 h-5 text-gray-400" />
+                    </button>
+                    <button type="submit" disabled={sending || isUploading || (!replyContent.trim() && pendingFiles.length === 0)} className="p-2 sm:p-2.5 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0">
+                      {sending || isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                    </button>
+                  </motion.form>
+                )}
+              </AnimatePresence>
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center p-4">

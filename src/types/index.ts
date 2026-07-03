@@ -21,7 +21,8 @@ export interface Message {
   content: string;
   attachment_url?: string;
   attachment_name?: string;
-  attachment_type?: 'image' | 'pdf' | 'word' | 'other';
+  attachment_type?: 'image' | 'pdf' | 'word' | 'audio' | 'other';
+  attachment_duration?: number;
   created_at: string;
   read_at?: string;
   reply_to_id?: string;

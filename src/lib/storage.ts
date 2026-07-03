@@ -8,6 +8,10 @@ const ALLOWED_MIME_TYPES = [
   'image/png',
   'image/webp',
   'image/gif',
+  'audio/webm',
+  'audio/mp4',
+  'audio/mpeg',
+  'audio/ogg',
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -29,13 +33,14 @@ export interface UploadProgress {
 export interface FilePreview {
   file: File;
   preview: string | null;
-  type: 'image' | 'pdf' | 'word' | 'other';
+  type: 'image' | 'pdf' | 'word' | 'audio' | 'other';
   size: number;
   name: string;
 }
 
-export function getFileType(file: File): 'image' | 'pdf' | 'word' | 'other' {
+export function getFileType(file: File): 'image' | 'pdf' | 'word' | 'audio' | 'other' {
   if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('audio/')) return 'audio';
   if (file.type === 'application/pdf') return 'pdf';
   if (
     file.type === 'application/msword' ||
