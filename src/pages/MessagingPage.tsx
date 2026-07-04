@@ -54,7 +54,6 @@ export function MessagingPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [conversationCode, setConversationCode] = useState('');
-  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -86,8 +85,8 @@ export function MessagingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  // Get conversation ID from messages or state
-  const conversationId = currentConversationId || (messages.length > 0 ? messages[0].conversation_id : null);
+  // Get conversation ID from messages (the original working logic)
+  const conversationId = messages.length > 0 ? messages[0].conversation_id : null;
 
   const scrollToBottom = useCallback(() => {
     if (messagesEndRef.current) {
@@ -216,8 +215,6 @@ export function MessagingPage() {
       });
       if (error) throw error;
 
-      // Set the conversation ID immediately
-      setCurrentConversationId(convId);
       setConversationCode(code);
 
       // Fetch the message we just sent
@@ -782,7 +779,6 @@ export function MessagingPage() {
                       onClick={() => {
                         setView('start');
                         setMessages([]);
-                        setCurrentConversationId(null);
                       }}
                       className="p-2 hover:bg-[#141B3D] rounded-lg transition-colors shrink-0"
                     >
