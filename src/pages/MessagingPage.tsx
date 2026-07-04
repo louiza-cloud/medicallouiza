@@ -3,14 +3,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send, Paperclip, User, ArrowLeft, MessageCircle, FileText, CheckCircle, File, Download,
   Reply, Edit2, Trash2, Copy, Forward, Search, X, MoreVertical, Check, CheckCheck,
-  Loader2, CornerDownLeft, ZoomIn, Image as ImageIcon, AlertCircle, Upload, Mic
+  Loader2, CornerDownLeft, Image as ImageIcon, Upload, Mic
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import {
   uploadMultipleFiles,
   uploadFile,
   getFileType,
-  isAllowedFile,
   createFilePreview,
   validateFiles,
   formatFileSize,
@@ -55,6 +54,7 @@ export function MessagingPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [conversationCode, setConversationCode] = useState('');
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -82,11 +82,12 @@ export function MessagingPage() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  const conversationId = messages.length > 0 ? messages[0].conversation_id : null;
+  // Get conversation ID from messages or state
+  const conversationId = currentConversationId || (messages.length > 0 ? messages[0].conversation_id : null);
 
   const scrollToBottom = useCallback(() => {
     if (messagesEndRef.current) {
@@ -98,69 +99,108 @@ export function MessagingPage() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  // Mark messages as read
-  useEffect(() => {
-    if (view === 'chat' && conversationId && messages.length > 0) {
-      supabase.rpc('mark_messages_read', {
-        p_conversation_id: conversationId,
-        p_user_type: 'patient'
-      });
-    }
-  }, [view, conversationId, messages.length]);
-
-  // Real-time subscription
+  // Real-time subscription for messages
   useEffect(() => {
     if (view !== 'chat' || !conversationId) return;
 
     const channel = supabase
       .channel(`messages-${conversationId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` },
-        (payload) => {
-          const newMsg = payload.new as Message;
-          setMessages(prev => prev.some(m => m.id === newMsg.id) ? prev : [...prev, newMsg]);
-          if (newMsg.sender_type === 'doctor') {
-            supabase.rpc('mark_messages_read', { p_conversation_id: conversationId, p_user_type: 'patient' });
-          }
-        })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` },
-        (payload) => setMessages(prev => prev.map(m => m.id === payload.new.id ? payload.new as Message : m)))
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}` },
-        (payload) => setMessages(prev => prev.filter(m => m.id !== payload.old.id)))
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `conversation_id=eq.${conversationId}`
+      }, (payload) => {
+        const newMsg = payload.new as Message;
+        setMessages(prev => {
+          if (prev.some(m => m.id === newMsg.id)) return prev;
+          return [...prev, newMsg];
+        });
+        // Mark as read if message is from doctor
+        if (newMsg.sender_type === 'doctor') {
+          supabase.rpc('mark_messages_read', {
+            p_conversation_id: conversationId,
+            p_user_type: 'patient'
+          }).catch(console.error);
+        }
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'messages',
+        filter: `conversation_id=eq.${conversationId}`
+      }, (payload) => {
+        setMessages(prev => prev.map(m => m.id === payload.new.id ? payload.new as Message : m));
+      })
+      .on('postgres_changes', {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'messages',
+        filter: `conversation_id=eq.${conversationId}`
+      }, (payload) => {
+        setMessages(prev => prev.filter(m => m.id !== payload.old.id));
+      })
       .subscribe();
 
     return () => { channel.unsubscribe(); };
   }, [view, conversationId]);
 
-  // Typing indicator
+  // Typing indicator subscription
   useEffect(() => {
     if (view !== 'chat' || !conversationId) return;
 
     const channel = supabase
       .channel(`typing-${conversationId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'typing_indicators', filter: `conversation_id=eq.${conversationId}` },
-        (payload) => {
-          const data = payload.new as TypingIndicator;
-          if (data.user_type === 'doctor') {
-            setTyping(data);
-            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-            typingTimeoutRef.current = setTimeout(() => setTyping(null), 3000);
-          }
-        })
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'typing_indicators',
+        filter: `conversation_id=eq.${conversationId}`
+      }, (payload) => {
+        const data = payload.new as TypingIndicator;
+        if (data.user_type === 'doctor') {
+          setTyping(data);
+          if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+          typingTimeoutRef.current = setTimeout(() => setTyping(null), 3000);
+        }
+      })
       .subscribe();
 
-    return () => { channel.unsubscribe(); if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current); };
+    return () => {
+      channel.unsubscribe();
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    };
   }, [view, conversationId]);
 
+  // Mark messages as read when viewing
+  useEffect(() => {
+    if (view === 'chat' && conversationId && messages.length > 0) {
+      supabase.rpc('mark_messages_read', {
+        p_conversation_id: conversationId,
+        p_user_type: 'patient'
+      }).catch(console.error);
+    }
+  }, [view, conversationId, messages.length]);
+
+  // Send typing indicator
   const sendTypingIndicator = useCallback(async () => {
-    if (!conversationId) return;
-    await supabase.from('typing_indicators').upsert({
-      conversation_id: conversationId, user_type: 'patient', user_name: userName, created_at: new Date().toISOString()
-    }, { onConflict: 'conversation_id,user_type' });
+    if (!conversationId || !userName) return;
+    try {
+      await supabase.from('typing_indicators').upsert({
+        conversation_id: conversationId,
+        user_type: 'patient',
+        user_name: userName,
+        created_at: new Date().toISOString()
+      }, { onConflict: 'conversation_id,user_type' });
+    } catch (err) {
+      console.error('Typing indicator error:', err);
+    }
   }, [conversationId, userName]);
 
+  // Start conversation
   const handleStartConversation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userName || !userEmail || !startMessage) return;
+    if (!userName || !userEmail || !startMessage.trim()) return;
 
     setSubmitting(true);
     const convId = `conv-${Date.now()}`;
@@ -168,17 +208,33 @@ export function MessagingPage() {
 
     try {
       const { error } = await supabase.from('messages').insert({
-        conversation_id: convId, sender_type: 'patient', sender_name: userName, sender_email: userEmail, content: startMessage,
+        conversation_id: convId,
+        sender_type: 'patient',
+        sender_name: userName,
+        sender_email: userEmail,
+        content: startMessage.trim(),
       });
       if (error) throw error;
 
+      // Set the conversation ID immediately
+      setCurrentConversationId(convId);
       setConversationCode(code);
-      const { data } = await supabase.from('messages').select('*').eq('conversation_id', convId).order('created_at', { ascending: true });
+
+      // Fetch the message we just sent
+      const { data, error: fetchError } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', convId)
+        .order('created_at', { ascending: true });
+
+      if (fetchError) throw fetchError;
       if (data) setMessages(data);
+
+      setStartMessage('');
       setView('chat');
     } catch (err) {
-      console.error(err);
-      alert('Erreur lors de la création de la conversation');
+      console.error('Error starting conversation:', err);
+      alert('Erreur lors de la création de la conversation. Veuillez réessayer.');
     }
     setSubmitting(false);
   };
@@ -200,16 +256,15 @@ export function MessagingPage() {
     }
 
     setPendingFiles(prev => [...prev, ...previews]);
-    setUploadProgress(prev => { const m = new Map(prev); previews.forEach((_, i) => m.set(`file-${prev.length + i}`, 0)); return m; });
-    setUploadStatus(prev => { const m = new Map(prev); previews.forEach((_, i) => m.set(`file-${prev.length + i}`, 'pending')); return m; });
   }, []);
 
   const removePendingFile = useCallback((index: number) => {
     setPendingFiles(prev => prev.filter((_, i) => i !== index));
   }, []);
 
+  // Send files
   const handleSendFiles = async () => {
-    if (pendingFiles.length === 0 || messages.length === 0) return;
+    if (pendingFiles.length === 0 || !conversationId) return;
 
     setIsUploading(true);
     const files = pendingFiles.map(p => p.file);
@@ -223,9 +278,9 @@ export function MessagingPage() {
       });
 
       for (const result of results) {
-        const msgData: Record<string, unknown> = {
-          conversation_id: messages[0].conversation_id,
-          sender_type: 'patient',
+        const msgData = {
+          conversation_id: conversationId,
+          sender_type: 'patient' as const,
           sender_name: userName,
           sender_email: userEmail,
           content: '[Fichier joint]',
@@ -233,10 +288,17 @@ export function MessagingPage() {
           attachment_name: result.name,
           attachment_type: result.type,
         };
-        if (replyingTo) msgData.reply_to_id = replyingTo.id;
 
         const { data, error } = await supabase.from('messages').insert(msgData).select().single();
-        if (data && !error) setMessages(prev => [...prev, data]);
+        if (error) {
+          console.error('Error inserting file message:', error);
+          alert(`Erreur lors de l'envoi de ${result.name}`);
+        } else if (data) {
+          setMessages(prev => {
+            if (prev.some(m => m.id === data.id)) return prev;
+            return [...prev, data];
+          });
+        }
       }
 
       setPendingFiles([]);
@@ -245,8 +307,8 @@ export function MessagingPage() {
       setUploadErrors(new Map());
       setReplyingTo(null);
     } catch (err) {
-      console.error(err);
-      alert('Erreur lors de l\'envoi des fichiers');
+      console.error('Error sending files:', err);
+      alert('Erreur lors de l\'envoi des fichiers. Veuillez réessayer.');
     }
     setIsUploading(false);
   };
@@ -307,100 +369,183 @@ export function MessagingPage() {
 
   // Voice message handling
   const handleVoiceSend = async (audioBlob: Blob, duration: number) => {
-    if (messages.length === 0) return;
+    if (!conversationId) return;
 
     setIsUploading(true);
     try {
       const file = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
       const result = await uploadFile(file, 'messages');
       if (result) {
-        const msgData: Record<string, unknown> = {
-          conversation_id: messages[0].conversation_id,
-          sender_type: 'patient',
+        const msgData = {
+          conversation_id: conversationId,
+          sender_type: 'patient' as const,
           sender_name: userName,
           sender_email: userEmail,
           content: '[Message vocal]',
           attachment_url: result.url,
           attachment_name: 'Message vocal',
-          attachment_type: 'audio',
+          attachment_type: 'audio' as const,
           attachment_duration: Math.round(duration),
         };
-        if (replyingTo) msgData.reply_to_id = replyingTo.id;
 
         const { data, error } = await supabase.from('messages').insert(msgData).select().single();
-        if (data && !error) setMessages(prev => [...prev, data]);
-        setReplyingTo(null);
+        if (error) {
+          console.error('Error inserting voice message:', error);
+          alert('Erreur lors de l\'envoi du message vocal');
+        } else if (data) {
+          setMessages(prev => {
+            if (prev.some(m => m.id === data.id)) return prev;
+            return [...prev, data];
+          });
+        }
       }
     } catch (err) {
-      console.error(err);
-      alert('Erreur lors de l\'envoi du message vocal');
+      console.error('Error sending voice message:', err);
+      alert('Erreur lors de l\'envoi du message vocal. Veuillez réessayer.');
     }
     setIsUploading(false);
     setShowVoiceRecorder(false);
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Send message
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+
+    // If there are pending files, send them instead
     if (pendingFiles.length > 0) {
       await handleSendFiles();
       return;
     }
-    if (!newMessage.trim() || submitting || messages.length === 0) return;
+
+    // Check if we can send
+    if (!newMessage.trim() || submitting || !conversationId) return;
 
     setSubmitting(true);
 
     try {
       if (editingMessage) {
+        // Update existing message
         const { error } = await supabase.from('messages').update({
-          content: newMessage.trim(), is_edited: true, edited_at: new Date().toISOString()
+          content: newMessage.trim(),
+          is_edited: true,
+          edited_at: new Date().toISOString()
         }).eq('id', editingMessage.id);
+
         if (error) throw error;
-        setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, content: newMessage.trim(), is_edited: true, edited_at: new Date().toISOString() } : m));
+
+        setMessages(prev => prev.map(m =>
+          m.id === editingMessage.id
+            ? { ...m, content: newMessage.trim(), is_edited: true, edited_at: new Date().toISOString() }
+            : m
+        ));
         setEditingMessage(null);
       } else {
-        const msgData: Record<string, unknown> = {
-          conversation_id: messages[0].conversation_id,
-          sender_type: 'patient', sender_name: userName, sender_email: userEmail, content: newMessage.trim(),
+        // Send new message
+        const msgData = {
+          conversation_id: conversationId,
+          sender_type: 'patient' as const,
+          sender_name: userName,
+          sender_email: userEmail,
+          content: newMessage.trim(),
+          status: 'sent' as const,
         };
-        if (replyingTo) msgData.reply_to_id = replyingTo.id;
+
         const { data, error } = await supabase.from('messages').insert(msgData).select().single();
+
         if (error) throw error;
-        if (data) setMessages(prev => [...prev, data]);
+
+        if (data) {
+          setMessages(prev => {
+            if (prev.some(m => m.id === data.id)) return prev;
+            return [...prev, data];
+          });
+        }
         setReplyingTo(null);
       }
       setNewMessage('');
     } catch (err) {
-      console.error(err);
-      alert('Erreur lors de l\'envoi du message');
+      console.error('Error sending message:', err);
+      alert('Erreur lors de l\'envoi du message. Veuillez réessayer.');
     }
     setSubmitting(false);
-    inputRef.current?.focus();
+
+    // Focus input after sending
+    setTimeout(() => inputRef.current?.focus(), 100);
   };
 
-  const handleReply = (msg: Message) => { setReplyingTo(msg); setEditingMessage(null); inputRef.current?.focus(); };
+  // Handle key down for textarea
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  // Message actions
+  const handleReply = (msg: Message) => {
+    setReplyingTo(msg);
+    setEditingMessage(null);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  };
+
   const handleEdit = (msg: Message) => {
     if (msg.sender_type !== 'patient') return;
-    setEditingMessage(msg); setNewMessage(msg.content); setReplyingTo(null); inputRef.current?.focus();
+    setEditingMessage(msg);
+    setNewMessage(msg.content);
+    setReplyingTo(null);
+    setTimeout(() => inputRef.current?.focus(), 100);
   };
+
   const handleDelete = async (msg: Message) => {
     if (msg.sender_type !== 'patient') return;
     if (!confirm('Supprimer ce message ?')) return;
-    await supabase.from('messages').update({ deleted_at: new Date().toISOString(), content: '[Message supprimé]' }).eq('id', msg.id);
-    setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, deleted_at: new Date().toISOString(), content: '[Message supprimé]' } : m));
+
+    try {
+      await supabase.from('messages').update({
+        deleted_at: new Date().toISOString(),
+        content: '[Message supprimé]'
+      }).eq('id', msg.id);
+
+      setMessages(prev => prev.map(m =>
+        m.id === msg.id
+          ? { ...m, deleted_at: new Date().toISOString(), content: '[Message supprimé]' }
+          : m
+      ));
+    } catch (err) {
+      console.error('Error deleting message:', err);
+      alert('Erreur lors de la suppression');
+    }
     setContextMenu(null);
   };
-  const handleCopy = (content: string) => { navigator.clipboard.writeText(content); setContextMenu(null); };
-  const handleForward = (msg: Message) => { setNewMessage(msg.content); setReplyingTo(null); setEditingMessage(null); inputRef.current?.focus(); setContextMenu(null); };
+
+  const handleCopy = (content: string) => {
+    navigator.clipboard.writeText(content);
+    setContextMenu(null);
+  };
+
+  const handleForward = (msg: Message) => {
+    setNewMessage(msg.content);
+    setReplyingTo(null);
+    setEditingMessage(null);
+    setTimeout(() => inputRef.current?.focus(), 100);
+    setContextMenu(null);
+  };
 
   // Image gallery
   const openGallery = (msg: Message, allMessages: Message[]) => {
     const images = allMessages.filter(m => m.attachment_type === 'image' && m.attachment_url);
     const index = images.findIndex(m => m.id === msg.id);
-    setPreviewFiles(images.map(m => ({ url: m.attachment_url!, name: m.attachment_name || 'Image', type: 'image', size: undefined })));
+    setPreviewFiles(images.map(m => ({
+      url: m.attachment_url!,
+      name: m.attachment_name || 'Image',
+      type: 'image',
+      size: undefined
+    })));
     setPreviewIndex(index >= 0 ? index : 0);
     setShowPreview(true);
   };
 
+  // Render attachment
   const renderAttachment = (msg: Message, allMsgs: Message[]) => {
     if (!msg.attachment_url) return null;
 
@@ -424,27 +569,26 @@ export function MessagingPage() {
       return (
         <div className="mt-2 relative group">
           <button
+            type="button"
             onClick={() => openGallery(msg, allMsgs)}
             className="block rounded-lg overflow-hidden"
           >
             <img
               src={msg.attachment_url}
               alt={msg.attachment_name || 'Image'}
-              className="max-w-full max-h-48 object-contain rounded-lg hover:opacity-90 transition-opacity"
+              className="max-w-full max-h-48 sm:max-h-56 object-contain rounded-lg hover:opacity-90 transition-opacity"
               loading="lazy"
             />
           </button>
           {totalImages > 1 && (
             <button
+              type="button"
               onClick={() => openGallery(msg, allMsgs)}
               className="absolute bottom-2 right-2 px-2 py-1 bg-black/60 rounded text-white text-xs flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
             >
               <ImageIcon className="w-3 h-3" />
               {imageIndex + 1}/{totalImages}
             </button>
-          )}
-          {msg.attachment_name && (
-            <p className="text-xs text-gray-400 mt-1 truncate">{msg.attachment_name}</p>
           )}
         </div>
       );
@@ -454,34 +598,44 @@ export function MessagingPage() {
     const Icon = isPdf ? FileText : File;
 
     return (
-      <div className="mt-2">
-        <a
-          href={msg.attachment_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          download={msg.attachment_name}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
-        >
-          <Icon className={`w-5 h-5 shrink-0 ${isPdf ? 'text-red-400' : 'text-blue-400'}`} />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm truncate">{msg.attachment_name || 'Document'}</p>
-          </div>
-          <Download className="w-4 h-4 shrink-0 opacity-60" />
-        </a>
-      </div>
+      <a
+        href={msg.attachment_url}
+        target="_blank"
+        rel="noopener noreferrer"
+        download={msg.attachment_name}
+        className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Icon className={`w-5 h-5 shrink-0 ${isPdf ? 'text-red-400' : 'text-blue-400'}`} />
+        <span className="text-sm truncate flex-1">{msg.attachment_name || 'Document'}</span>
+        <Download className="w-4 h-4 shrink-0 opacity-60" />
+      </a>
     );
   };
 
+  // Render status
   const renderStatus = (msg: Message) => {
     if (msg.sender_type !== 'patient') return null;
-    if (msg.status === 'read' || msg.read_at) return <CheckCheck className="w-4 h-4 text-blue-300" />;
-    if (msg.status === 'delivered') return <CheckCheck className="w-4 h-4 text-gray-400" />;
-    return <Check className="w-4 h-4 text-gray-400" />;
+    if (msg.status === 'read' || msg.read_at) {
+      return <CheckCheck className="w-4 h-4 text-blue-300" title="Lu" />;
+    }
+    if (msg.status === 'delivered') {
+      return <CheckCheck className="w-4 h-4 text-gray-400" title="Délivré" />;
+    }
+    return <Check className="w-4 h-4 text-gray-400" title="Envoyé" />;
   };
 
-  const filteredMessages = searchQuery ? messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()) || m.sender_name.toLowerCase().includes(searchQuery.toLowerCase())) : messages;
+  // Filter messages by search
+  const filteredMessages = searchQuery
+    ? messages.filter(m =>
+        m.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        m.sender_name.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : messages;
+
   const groupedMessages = groupMessagesByDay(filteredMessages);
 
+  // Close context menu on outside click
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
     window.addEventListener('click', handleClick);
@@ -489,38 +643,99 @@ export function MessagingPage() {
   }, []);
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="min-h-[80vh] bg-[#050810] py-8 sm:py-12">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="min-h-[80vh] bg-[#050810] py-8 sm:py-12"
+    >
       <div className="max-w-5xl mx-auto px-3 sm:px-6 lg:px-8">
         <div className="text-center mb-8 sm:mb-12">
-          <h1 className="font-serif text-2xl sm:text-3xl lg:text-4xl text-white italic mb-2 sm:mb-4">Messagerie</h1>
-          <p className="text-gray-400 text-sm sm:text-base">Communiquez directement avec le Dr. Djalane</p>
+          <h1 className="font-serif text-2xl sm:text-3xl lg:text-4xl text-white italic mb-2 sm:mb-4">
+            Messagerie
+          </h1>
+          <p className="text-gray-400 text-sm sm:text-base">
+            Communiquez directement avec le Dr. Djalane
+          </p>
         </div>
 
         <AnimatePresence mode="wait">
           {view === 'start' && (
-            <motion.div key="start" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-xl mx-auto">
+            <motion.div
+              key="start"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="max-w-xl mx-auto"
+            >
               <div className="bg-[#141B3D] border border-[#0A0F2C] rounded-xl p-4 sm:p-6">
                 <div className="text-center mb-6">
                   <div className="w-14 h-14 sm:w-16 sm:h-16 bg-[#3B6FE8]/20 rounded-full flex items-center justify-center mx-auto mb-4">
                     <MessageCircle className="w-7 h-7 sm:w-8 sm:h-8 text-[#3B6FE8]" />
                   </div>
-                  <p className="text-gray-400 text-xs sm:text-sm">Pas besoin de compte. Complétez le formulaire ci-dessous pour commencer.</p>
+                  <p className="text-gray-400 text-xs sm:text-sm">
+                    Pas besoin de compte. Complétez le formulaire ci-dessous pour commencer.
+                  </p>
                 </div>
+
                 <form onSubmit={handleStartConversation} className="space-y-4 sm:space-y-5">
                   <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-2"><User className="w-4 h-4 inline mr-2" />Votre nom</label>
-                    <input type="text" value={userName} onChange={e => setUserName(e.target.value)} className="w-full px-4 py-3 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8]" placeholder="Votre nom complet" required />
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      <User className="w-4 h-4 inline mr-2" />Votre nom
+                    </label>
+                    <input
+                      type="text"
+                      value={userName}
+                      onChange={e => setUserName(e.target.value)}
+                      className="w-full px-4 py-3 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8] transition-colors"
+                      placeholder="Votre nom complet"
+                      required
+                    />
                   </div>
+
                   <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-2">Adresse email</label>
-                    <input type="email" value={userEmail} onChange={e => setUserEmail(e.target.value)} className="w-full px-4 py-3 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8]" placeholder="votre@email.com" required />
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Adresse email
+                    </label>
+                    <input
+                      type="email"
+                      value={userEmail}
+                      onChange={e => setUserEmail(e.target.value)}
+                      className="w-full px-4 py-3 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8] transition-colors"
+                      placeholder="votre@email.com"
+                      required
+                    />
                   </div>
+
                   <div>
-                    <label className="block text-sm font-medium text-gray-400 mb-2">Votre message</label>
-                    <textarea rows={4} value={startMessage} onChange={e => setStartMessage(e.target.value)} className="w-full px-4 py-3 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8] resize-none" placeholder="Bonjour, je souhaite..." required />
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Votre message
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={startMessage}
+                      onChange={e => setStartMessage(e.target.value)}
+                      className="w-full px-4 py-3 bg-[#0A0F2C] border border-[#141B3D] rounded-lg text-white focus:outline-none focus:border-[#3B6FE8] resize-none transition-colors"
+                      placeholder="Bonjour, je souhaite..."
+                      required
+                    />
                   </div>
-                  <button type="submit" disabled={submitting} className="w-full py-3 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg font-medium flex items-center justify-center gap-2 disabled:opacity-50">
-                    {submitting ? <><Loader2 className="w-4 h-4 animate-spin" />Envoi...</> : <><Send className="w-4 h-4" />Démarrer la conversation</>}
+
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="w-full py-3 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
+                  >
+                    {submitting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Envoi...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4" />
+                        Démarrer la conversation
+                      </>
+                    )}
                   </button>
                 </form>
               </div>
@@ -528,7 +743,13 @@ export function MessagingPage() {
           )}
 
           {view === 'chat' && (
-            <motion.div key="chat" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="max-w-2xl mx-auto">
+            <motion.div
+              key="chat"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="max-w-2xl mx-auto"
+            >
               <div
                 ref={dropZoneRef}
                 onDragOver={handleDragOver}
@@ -556,7 +777,15 @@ export function MessagingPage() {
                 {/* Header */}
                 <div className="bg-[#0A0F2C] p-3 sm:p-4 flex items-center justify-between border-b border-[#141B3D] shrink-0">
                   <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                    <button onClick={() => { setView('start'); setMessages([]); }} className="p-2 hover:bg-[#141B3D] rounded-lg transition-colors shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setView('start');
+                        setMessages([]);
+                        setCurrentConversationId(null);
+                      }}
+                      className="p-2 hover:bg-[#141B3D] rounded-lg transition-colors shrink-0"
+                    >
                       <ArrowLeft className="w-5 h-5 text-gray-400" />
                     </button>
                     <div className="min-w-0">
@@ -564,10 +793,18 @@ export function MessagingPage() {
                         <h3 className="text-white font-medium text-sm sm:text-base truncate">Dr. Aziz Djalane</h3>
                         <span className="w-2 h-2 bg-green-500 rounded-full shrink-0" title="En ligne" />
                       </div>
-                      {typing ? <p className="text-[#3B6FE8] text-xs animate-pulse">En train d'écrire...</p> : <p className="text-gray-500 text-xs truncate">Code : {conversationCode}</p>}
+                      {typing ? (
+                        <p className="text-[#3B6FE8] text-xs animate-pulse">En train d'écrire...</p>
+                      ) : (
+                        <p className="text-gray-500 text-xs truncate">Code : {conversationCode}</p>
+                      )}
                     </div>
                   </div>
-                  <button onClick={() => setShowSearch(!showSearch)} className="p-2 hover:bg-[#141B3D] rounded-lg transition-colors shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowSearch(!showSearch)}
+                    className="p-2 hover:bg-[#141B3D] rounded-lg transition-colors shrink-0"
+                  >
                     <Search className="w-5 h-5 text-gray-400" />
                   </button>
                 </div>
@@ -579,8 +816,23 @@ export function MessagingPage() {
                       <div className="p-3 bg-[#0A0F2C] border-b border-[#141B3D]">
                         <div className="relative">
                           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                          <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Rechercher..." className="w-full pl-10 pr-8 py-2 bg-[#141B3D] border border-[#0A0F2C] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]" autoFocus />
-                          {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 p-1"><X className="w-3 h-3 text-gray-500" /></button>}
+                          <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={e => setSearchQuery(e.target.value)}
+                            placeholder="Rechercher..."
+                            className="w-full pl-10 pr-8 py-2 bg-[#141B3D] border border-[#0A0F2C] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]"
+                            autoFocus
+                          />
+                          {searchQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setSearchQuery('')}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 p-1"
+                            >
+                              <X className="w-3 h-3 text-gray-500" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     </motion.div>
@@ -590,15 +842,22 @@ export function MessagingPage() {
                 {/* Info banner */}
                 <div className="p-3 sm:p-4 bg-[#141B3D]/50 border-b border-[#0A0F2C] flex items-center gap-2 shrink-0">
                   <CheckCircle className="w-4 h-4 text-green-400 shrink-0" />
-                  <span className="text-gray-400 text-xs sm:text-sm">Code de retour : <span className="text-[#3B6FE8] font-mono">{conversationCode}</span></span>
+                  <span className="text-gray-400 text-xs sm:text-sm">
+                    Code de retour : <span className="text-[#3B6FE8] font-mono">{conversationCode}</span>
+                  </span>
                 </div>
 
                 {/* Messages */}
-                <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4 bg-[#0A0F2C]">
+                <div
+                  ref={messagesContainerRef}
+                  className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4 bg-[#0A0F2C]"
+                >
                   {groupedMessages.map(({ date, messages: msgs }) => (
                     <div key={date}>
                       <div className="flex justify-center mb-3">
-                        <span className="px-3 py-1 bg-[#141B3D] rounded-full text-gray-400 text-xs">{date}</span>
+                        <span className="px-3 py-1 bg-[#141B3D] rounded-full text-gray-400 text-xs">
+                          {date}
+                        </span>
                       </div>
                       {msgs.map(msg => (
                         <motion.div
@@ -606,34 +865,114 @@ export function MessagingPage() {
                           initial={{ opacity: 0, y: 10, scale: 0.95 }}
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           transition={{ duration: 0.2 }}
-                          className={`flex ${msg.sender_type === 'patient' ? 'justify-end' : 'justify-start'} mb-2`}
+                          className={`flex ${msg.sender_type === 'patient' ? 'justify-end' : 'justify-start'} mb-2 group relative`}
+                          onClick={() => setContextMenu(null)}
                         >
-                          <div className={`relative max-w-[85%] sm:max-w-[75%] p-3 sm:p-4 rounded-2xl ${msg.sender_type === 'patient' ? 'bg-[#3B6FE8] text-white rounded-br-sm' : 'bg-[#141B3D] text-gray-300 rounded-bl-sm'} ${msg.deleted_at ? 'opacity-50 italic' : ''}`}>
-                            {msg.reply_to_id && <div className={`mb-2 pl-2 border-l-2 text-xs ${msg.sender_type === 'patient' ? 'border-blue-200 text-blue-100' : 'border-gray-500 text-gray-500'}`}>↳ Message...</div>}
-                            <button onClick={(e) => { e.stopPropagation(); setContextMenu({ messageId: msg.id, x: e.clientX, y: e.clientY }); }} className="absolute top-1 right-1 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-white/10 text-white/50">
-                              <MoreVertical className="w-4 h-4" />
-                            </button>
-                            <div className="group">
-                              {msg.sender_type === 'doctor' && <p className="text-[#3B6FE8] text-xs font-medium mb-1">Dr. Djalane</p>}
-                              {msg.content !== '[Fichier joint]' && msg.content !== '[Message supprimé]' && <p className="text-sm whitespace-pre-wrap break-words pr-4">{msg.content}</p>}
-                              {(msg.content === '[Fichier joint]' || msg.content === '[Message supprimé]') && <p className="text-sm italic opacity-70">{msg.content}</p>}
-                              {renderAttachment(msg, messages)}
-                              <div className={`flex items-center justify-end gap-1 mt-1 ${msg.sender_type === 'patient' ? 'text-blue-100/70' : 'text-gray-500'}`}>
-                                <span className="text-[10px] sm:text-xs">{new Date(msg.created_at).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
-                                {msg.is_edited && <span className="text-[10px]">(modifié)</span>}
-                                {renderStatus(msg)}
+                          <div
+                            className={`relative max-w-[85%] sm:max-w-[70%] p-3 rounded-2xl ${msg.sender_type === 'patient'
+                              ? 'bg-[#3B6FE8] text-white rounded-br-sm'
+                              : 'bg-[#141B3D] text-gray-300 rounded-bl-sm'
+                            } ${msg.deleted_at ? 'opacity-50 italic' : ''}`}
+                          >
+                            {/* Reply preview */}
+                            {msg.reply_to_id && (
+                              <div className={`mb-2 pl-2 border-l-2 text-xs ${msg.sender_type === 'patient'
+                              ? 'border-blue-200 text-blue-100'
+                              : 'border-gray-500 text-gray-500'
+                              }`}>
+                                ↳ Message...
                               </div>
+                            )}
+
+                            {/* Context menu button */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setContextMenu({
+                                  messageId: msg.id,
+                                  x: Math.min(e.clientX, window.innerWidth - 160),
+                                  y: Math.min(e.clientY, window.innerHeight - 200)
+                                });
+                              }}
+                              className="absolute top-1 right-1 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-opacity"
+                            >
+                              <MoreVertical className="w-4 h-4 opacity-50" />
+                            </button>
+
+                            {/* Sender name for doctor */}
+                            {msg.sender_type === 'doctor' && (
+                              <p className="text-[#3B6FE8] text-xs font-medium mb-1">Dr. Djalane</p>
+                            )}
+
+                            {/* Message content */}
+                            {msg.content !== '[Fichier joint]' && msg.content !== '[Message supprimé]' ? (
+                              <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-break-word pr-5">
+                                {msg.content}
+                              </p>
+                            ) : (
+                              <p className="text-sm italic opacity-70 pr-5">{msg.content}</p>
+                            )}
+
+                            {/* Attachment */}
+                            {renderAttachment(msg, messages)}
+
+                            {/* Time and status */}
+                            <div className={`flex items-center justify-end gap-1 mt-1 ${msg.sender_type === 'patient' ? 'text-blue-100/70' : 'text-gray-500'}`}>
+                              <span className="text-[10px] sm:text-xs">
+                                {new Date(msg.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                              {msg.is_edited && (
+                                <span className="text-[10px]">(modifié)</span>
+                              )}
+                              {renderStatus(msg)}
                             </div>
                           </div>
+
+                          {/* Context menu */}
                           {contextMenu?.messageId === msg.id && (
-                            <div className="fixed z-50 bg-[#1a2147] border border-[#3B6FE8]/30 rounded-lg shadow-lg py-1 min-w-[140px]" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
-                              <button onClick={() => handleReply(msg)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"><Reply className="w-4 h-4" /> Répondre</button>
-                              <button onClick={() => handleCopy(msg.content)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"><Copy className="w-4 h-4" /> Copier</button>
-                              <button onClick={() => handleForward(msg)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"><Forward className="w-4 h-4" /> Transférer</button>
+                            <div
+                              className="fixed z-50 bg-[#1a2147] border border-[#3B6FE8]/30 rounded-lg shadow-lg py-1 min-w-[140px]"
+                              style={{ left: contextMenu.x, top: contextMenu.y }}
+                              onClick={e => e.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => handleReply(msg)}
+                                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"
+                              >
+                                <Reply className="w-4 h-4" /> Répondre
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(msg.content)}
+                                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"
+                              >
+                                <Copy className="w-4 h-4" /> Copier
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleForward(msg)}
+                                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"
+                              >
+                                <Forward className="w-4 h-4" /> Transférer
+                              </button>
                               {msg.sender_type === 'patient' && !msg.deleted_at && (
                                 <>
-                                  <button onClick={() => handleEdit(msg)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"><Edit2 className="w-4 h-4" /> Modifier</button>
-                                  <button onClick={() => handleDelete(msg)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-red-500/20 text-red-400 text-sm"><Trash2 className="w-4 h-4" /> Supprimer</button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleEdit(msg)}
+                                    className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#3B6FE8]/20 text-gray-300 text-sm"
+                                  >
+                                    <Edit2 className="w-4 h-4" /> Modifier
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDelete(msg)}
+                                    className="w-full flex items-center gap-2 px-3 py-2 hover:bg-red-500/20 text-red-400 text-sm"
+                                  >
+                                    <Trash2 className="w-4 h-4" /> Supprimer
+                                  </button>
                                 </>
                               )}
                             </div>
@@ -659,11 +998,34 @@ export function MessagingPage() {
                   {(replyingTo || editingMessage) && (
                     <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
                       <div className="px-4 py-2 bg-[#0A0F2C] border-t border-[#141B3D] flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-sm">
-                          {replyingTo && <><CornerDownLeft className="w-4 h-4 text-[#3B6FE8]" /><span className="text-gray-400">Répondre à: </span><span className="text-white truncate max-w-[200px]">{replyingTo.content.substring(0, 30)}...</span></>}
-                          {editingMessage && <><Edit2 className="w-4 h-4 text-yellow-400" /><span className="text-gray-400">Modifier le message</span></>}
+                        <div className="flex items-center gap-2 text-sm min-w-0">
+                          {replyingTo && (
+                            <>
+                              <CornerDownLeft className="w-4 h-4 text-[#3B6FE8] shrink-0" />
+                              <span className="text-gray-400">Répondre à:</span>
+                              <span className="text-white truncate max-w-[180px]">
+                                {replyingTo.content.substring(0, 30)}...
+                              </span>
+                            </>
+                          )}
+                          {editingMessage && (
+                            <>
+                              <Edit2 className="w-4 h-4 text-yellow-400 shrink-0" />
+                              <span className="text-gray-400">Modifier le message</span>
+                            </>
+                          )}
                         </div>
-                        <button onClick={() => { setReplyingTo(null); setEditingMessage(null); setNewMessage(''); }} className="p-1 hover:bg-[#141B3D] rounded"><X className="w-4 h-4 text-gray-500" /></button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReplyingTo(null);
+                            setEditingMessage(null);
+                            setNewMessage('');
+                          }}
+                          className="p-1 hover:bg-[#141B3D] rounded shrink-0"
+                        >
+                          <X className="w-4 h-4 text-gray-500" />
+                        </button>
                       </div>
                     </motion.div>
                   )}
@@ -683,21 +1045,52 @@ export function MessagingPage() {
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
                       onSubmit={handleSendMessage}
-                      className="p-3 sm:p-4 bg-[#0A0F2C] border-t border-[#141B3D] flex gap-2 sm:gap-3 shrink-0"
+                      className="p-3 sm:p-4 bg-[#0A0F2C] border-t border-[#141B3D] flex gap-2 sm:gap-3 items-end shrink-0"
                     >
-                      <label className={`p-2 sm:p-3 bg-[#141B3D] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${isUploading ? 'opacity-50' : ''}`} title="Joindre des fichiers">
-                        <input ref={fileInputRef} type="file" accept="image/*,.pdf,.doc,.docx" multiple onChange={handleFileSelect} className="hidden" disabled={isUploading || submitting} />
-                        {isUploading ? <Loader2 className="w-5 h-5 text-gray-400 animate-spin" /> : <Paperclip className="w-5 h-5 text-gray-400" />}
+                      <label
+                        className={`p-2 sm:p-3 bg-[#141B3D] rounded-lg cursor-pointer hover:bg-[#1a2147] transition-colors shrink-0 ${isUploading ? 'opacity-50' : ''}`}
+                        title="Joindre des fichiers"
+                      >
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/*,.pdf,.doc,.docx"
+                          multiple
+                          onChange={handleFileSelect}
+                          className="hidden"
+                          disabled={isUploading || submitting}
+                        />
+                        {isUploading ? (
+                          <Loader2 className="w-5 h-5 text-gray-400 animate-spin" />
+                        ) : (
+                          <Paperclip className="w-5 h-5 text-gray-400" />
+                        )}
                       </label>
-                      <input
-                        ref={inputRef}
-                        type="text"
-                        value={newMessage}
-                        onChange={e => { setNewMessage(e.target.value); sendTypingIndicator(); }}
-                        placeholder={pendingFiles.length > 0 ? `${pendingFiles.length} fichier${pendingFiles.length > 1 ? 's' : ''} à envoyer` : "Votre message..."}
-                        className="flex-1 min-w-0 bg-[#141B3D] border border-[#0A0F2C] rounded-lg px-3 sm:px-4 py-2 sm:py-3 text-white placeholder-gray-500 focus:outline-none focus:border-[#3B6FE8] text-sm sm:text-base"
-                        disabled={submitting || isUploading}
-                      />
+
+                      <div className="flex-1 min-w-0">
+                        <textarea
+                          ref={inputRef}
+                          value={newMessage}
+                          onChange={(e) => {
+                            setNewMessage(e.target.value);
+                            sendTypingIndicator();
+                          }}
+                          onKeyDown={handleKeyDown}
+                          placeholder={pendingFiles.length > 0
+                            ? `${pendingFiles.length} fichier${pendingFiles.length > 1 ? 's' : ''} à envoyer`
+                            : "Message... (Entrée pour envoyer, Maj+Entrée pour nouvelle ligne)"
+                          }
+                          className="w-full min-h-[44px] max-h-32 px-3 sm:px-4 py-2 sm:py-3 bg-[#141B3D] border border-[#0A0F2C] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-[#3B6FE8] text-sm sm:text-base resize-none overflow-hidden"
+                          disabled={submitting || isUploading}
+                          rows={1}
+                          onInput={(e) => {
+                            const target = e.target as HTMLTextAreaElement;
+                            target.style.height = 'auto';
+                            target.style.height = Math.min(target.scrollHeight, 128) + 'px';
+                          }}
+                        />
+                      </div>
+
                       <button
                         type="button"
                         onClick={() => setShowVoiceRecorder(true)}
@@ -706,8 +1099,17 @@ export function MessagingPage() {
                       >
                         <Mic className="w-5 h-5 text-gray-400" />
                       </button>
-                      <button type="submit" disabled={(!newMessage.trim() && pendingFiles.length === 0) || submitting || isUploading} className="p-2 sm:p-3 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0 transition-colors">
-                        {submitting || isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+
+                      <button
+                        type="submit"
+                        disabled={(!newMessage.trim() && pendingFiles.length === 0) || submitting || isUploading}
+                        className="p-2 sm:p-3 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg disabled:opacity-50 shrink-0 transition-colors"
+                      >
+                        {submitting || isUploading ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <Send className="w-5 h-5" />
+                        )}
                       </button>
                     </motion.form>
                   )}

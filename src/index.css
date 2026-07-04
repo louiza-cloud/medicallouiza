@@ -15,6 +15,20 @@
   .input-field { @apply w-full px-4 py-3 bg-[#141B3D] border border-[#0A0F2C] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-[#3B6FE8] focus:ring-1 focus:ring-[#3B6FE8] transition-all duration-300; }
 }
 
+/* Message bubble word breaking */
+.message-bubble {
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  word-break: break-word;
+  hyphens: auto;
+}
+
+/* Prevent long URLs from breaking layout */
+.message-bubble a {
+  word-break: break-all;
+}
+
+/* Scrollbar styling */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: #0A0F2C; }
 ::-webkit-scrollbar-thumb { background: #3B6FE8; border-radius: 4px; }
