@@ -18,6 +18,7 @@ import {
 import { FilePreviewModal } from '../components/FilePreviewModal';
 import { FileUploadPreview } from '../components/FileUploadPreview';
 import { VoiceRecorder, AudioPlayer } from '../components/VoiceRecorder';
+import { useConversation } from '../hooks/useConversation';
 import type { Message, TypingIndicator } from '../types';
 
 function generateConversationCode(): string {
@@ -47,9 +48,21 @@ function groupMessagesByDay(messages: Message[]): { date: string; messages: Mess
 }
 
 export function MessagingPage() {
+  // Use the conversation hook for conversation management
+  const {
+    conversationId,
+    isLoading: isConversationLoading,
+    error: conversationError,
+    userName,
+    userEmail,
+    setUserName,
+    setUserEmail,
+    createConversation,
+    restoreConversation,
+    clearConversation,
+  } = useConversation();
+
   const [view, setView] = useState<'start' | 'chat'>('start');
-  const [userName, setUserName] = useState('');
-  const [userEmail, setUserEmail] = useState('');
   const [startMessage, setStartMessage] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -78,12 +91,6 @@ export function MessagingPage() {
   // Voice recording
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
 
-  // Conversation ID - stored in state, persisted to localStorage
-  const [conversationId, setConversationId] = useState<string | null>(() => {
-    const stored = localStorage.getItem('messaging_conversation_id');
-    return stored || null;
-  });
-
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -91,41 +98,25 @@ export function MessagingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  // Persist conversationId to localStorage
-  useEffect(() => {
-    if (conversationId) {
-      localStorage.setItem('messaging_conversation_id', conversationId);
-    }
-  }, [conversationId]);
-
   // Restore conversation on page load
   useEffect(() => {
-    const restoreConversation = async () => {
-      if (conversationId) {
-        try {
-          const { data, error: fetchError } = await supabase
-            .from('messages')
-            .select('*')
-            .eq('conversation_id', conversationId)
-            .order('created_at', { ascending: true });
+    const initConversation = async () => {
+      const restored = await restoreConversation();
+      if (restored && conversationId) {
+        // Fetch messages for the restored conversation
+        const { data, error: fetchError } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('conversation_id', conversationId)
+          .order('created_at', { ascending: true });
 
-          if (fetchError) throw fetchError;
-
-          if (data && data.length > 0) {
-            setMessages(data);
-            const firstMsg = data[0];
-            setUserName(firstMsg.sender_name || '');
-            setUserEmail(firstMsg.sender_email || '');
-            setView('chat');
-          }
-        } catch (err) {
-          console.error('Error restoring conversation:', err);
-          localStorage.removeItem('messaging_conversation_id');
-          setConversationId(null);
+        if (!fetchError && data && data.length > 0) {
+          setMessages(data);
+          setView('chat');
         }
       }
     };
-    restoreConversation();
+    initConversation();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scrollToBottom = useCallback(() => {
@@ -242,37 +233,30 @@ export function MessagingPage() {
     if (!userName || !userEmail || !startMessage.trim()) return;
 
     setSubmitting(true);
-    const convId = `conv-${Date.now()}`;
     const code = generateConversationCode();
 
-    try {
-      const { error } = await supabase.from('messages').insert({
-        conversation_id: convId,
-        sender_type: 'patient',
-        sender_name: userName,
-        sender_email: userEmail,
-        content: startMessage.trim(),
-      });
-      if (error) throw error;
+    // Use the hook to create the conversation
+    const newConvId = await createConversation(userName, userEmail, startMessage);
 
+    if (newConvId) {
       setConversationCode(code);
-      setConversationId(convId);
 
       // Fetch the message we just sent
       const { data, error: fetchError } = await supabase
         .from('messages')
         .select('*')
-        .eq('conversation_id', convId)
+        .eq('conversation_id', newConvId)
         .order('created_at', { ascending: true });
 
-      if (fetchError) throw fetchError;
-      if (data) setMessages(data);
+      if (!fetchError && data) {
+        setMessages(data);
+      }
 
       setStartMessage('');
       setView('chat');
-    } catch (err) {
-      console.error('Error starting conversation:', err);
-      alert('Erreur lors de la création de la conversation. Veuillez réessayer.');
+    } else {
+      // Error is already set in the hook
+      alert(conversationError || 'Erreur lors de la création de la conversation. Veuillez réessayer.');
     }
     setSubmitting(false);
   };
@@ -820,6 +804,7 @@ export function MessagingPage() {
                       onClick={() => {
                         setView('start');
                         setMessages([]);
+                        clearConversation();
                       }}
                       className="p-2 hover:bg-[#141B3D] rounded-lg transition-colors shrink-0"
                     >
