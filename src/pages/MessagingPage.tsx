@@ -78,6 +78,12 @@ export function MessagingPage() {
   // Voice recording
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
 
+  // Conversation ID - stored in state, persisted to localStorage
+  const [conversationId, setConversationId] = useState<string | null>(() => {
+    const stored = localStorage.getItem('messaging_conversation_id');
+    return stored || null;
+  });
+
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -85,8 +91,42 @@ export function MessagingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  // Get conversation ID from messages (the original working logic)
-  const conversationId = messages.length > 0 ? messages[0].conversation_id : null;
+  // Persist conversationId to localStorage
+  useEffect(() => {
+    if (conversationId) {
+      localStorage.setItem('messaging_conversation_id', conversationId);
+    }
+  }, [conversationId]);
+
+  // Restore conversation on page load
+  useEffect(() => {
+    const restoreConversation = async () => {
+      if (conversationId) {
+        try {
+          const { data, error: fetchError } = await supabase
+            .from('messages')
+            .select('*')
+            .eq('conversation_id', conversationId)
+            .order('created_at', { ascending: true });
+
+          if (fetchError) throw fetchError;
+
+          if (data && data.length > 0) {
+            setMessages(data);
+            const firstMsg = data[0];
+            setUserName(firstMsg.sender_name || '');
+            setUserEmail(firstMsg.sender_email || '');
+            setView('chat');
+          }
+        } catch (err) {
+          console.error('Error restoring conversation:', err);
+          localStorage.removeItem('messaging_conversation_id');
+          setConversationId(null);
+        }
+      }
+    };
+    restoreConversation();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scrollToBottom = useCallback(() => {
     if (messagesEndRef.current) {
@@ -216,6 +256,7 @@ export function MessagingPage() {
       if (error) throw error;
 
       setConversationCode(code);
+      setConversationId(convId);
 
       // Fetch the message we just sent
       const { data, error: fetchError } = await supabase
