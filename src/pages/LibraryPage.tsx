@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { BookOpen, FileText, Download, Eye, Image as ImageIcon, File } from 'lucide-react';
+import { BookOpen, FileText, ImageIcon } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Document } from '../types';
 
@@ -17,42 +17,18 @@ export function LibraryPage() {
     fetchDocuments();
   }, []);
 
-  // Real-time subscription for documents
   useEffect(() => {
     const channel = supabase
       .channel('documents-public')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'documents' },
-        (payload) => {
-          setDocuments(prev => {
-            if (prev.some(d => d.id === payload.new.id)) return prev;
-            return [payload.new as Document, ...prev];
-          });
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'documents' },
-        (payload) => {
-          setDocuments(prev => prev.filter(d => d.id !== payload.old.id));
-        }
-      )
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'documents' }, (payload) => {
+        setDocuments(prev => prev.some(d => d.id === payload.new.id) ? prev : [payload.new as Document, ...prev]);
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'documents' }, (payload) => {
+        setDocuments(prev => prev.filter(d => d.id !== payload.old.id));
+      })
       .subscribe();
     return () => { channel.unsubscribe(); };
   }, []);
-
-  const getDocIcon = (doc: Document) => {
-    if (doc.file_type === 'image') return <ImageIcon className="w-7 h-7 text-green-400" />;
-    if (doc.file_type === 'word') return <File className="w-7 h-7 text-blue-400" />;
-    return <FileText className="w-7 h-7 text-red-400" />;
-  };
-
-  const getDocBg = (doc: Document) => {
-    if (doc.file_type === 'image') return 'bg-green-900/30 group-hover:bg-green-900/50';
-    if (doc.file_type === 'word') return 'bg-blue-900/30 group-hover:bg-blue-900/50';
-    return 'bg-red-900/30 group-hover:bg-red-900/50';
-  };
 
   const formatSize = (bytes?: number) => {
     if (!bytes) return '';
@@ -85,19 +61,24 @@ export function LibraryPage() {
         ) : (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {documents.map((doc, i) => (
-              <motion.div key={doc.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="bg-[#141B3D] border border-[#0A0F2C] rounded-xl p-6 hover:border-[#3B6FE8]/50 transition-all group">
-                <div className="flex items-start gap-4">
-                  <div className={`w-14 h-14 rounded-xl flex items-center justify-center shrink-0 ${getDocBg(doc)}`}>
-                    {getDocIcon(doc)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-white font-medium mb-2 group-hover:text-[#3B6FE8] transition-colors line-clamp-2">{doc.title}</h3>
-                    {doc.file_size && <p className="text-gray-500 text-sm mb-3">{formatSize(doc.file_size)}</p>}
-                    <div className="flex gap-2">
-                      <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-sm text-gray-400 hover:text-[#3B6FE8]"><Eye className="w-4 h-4" />Voir</a>
-                      <a href={doc.file_url} download className="flex items-center gap-1 text-sm text-gray-400 hover:text-[#3B6FE8]"><Download className="w-4 h-4" />Télécharger</a>
+              <motion.div key={doc.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="bg-[#141B3D] rounded-xl overflow-hidden border border-[#0A0F2C] group hover:border-[#3B6FE8]/50 transition-all flex flex-col">
+                <div className="relative h-40 bg-[#0A0F2C] flex items-center justify-center overflow-hidden">
+                  {doc.cover_url ? (
+                    <img src={doc.cover_url} alt={doc.title} className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <div className="flex flex-col items-center gap-2">
+                      <FileText className="w-10 h-10 text-red-400/60" />
+                      <span className="text-gray-600 text-xs">Aucune couverture</span>
                     </div>
-                  </div>
+                  )}
+                </div>
+                <div className="p-4 flex-1 flex flex-col">
+                  <h3 className="text-white font-medium line-clamp-2 mb-1 group-hover:text-[#3B6FE8] transition-colors">{doc.title}</h3>
+                  {doc.file_size && <p className="text-gray-600 text-xs mb-3">{formatSize(doc.file_size)}</p>}
+                  <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="mt-auto flex items-center justify-center gap-2 px-3 py-2 bg-[#3B6FE8]/20 hover:bg-[#3B6FE8] text-[#3B6FE8] hover:text-white rounded-lg text-sm font-medium transition-all">
+                    <FileText className="w-4 h-4" />
+                    Lire le document
+                  </a>
                 </div>
               </motion.div>
             ))}

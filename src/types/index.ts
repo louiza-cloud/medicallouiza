@@ -55,6 +55,7 @@ export interface Document {
   file_name: string;
   file_size?: number;
   file_type?: 'pdf' | 'word' | 'image' | 'other';
+  cover_url?: string | null;
   created_at: string;
 }
 

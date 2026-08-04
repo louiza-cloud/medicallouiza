@@ -1,7 +1,10 @@
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Calendar, Users, Play, Star, Leaf, Pill, Flower2, Heart, Activity, Zap } from 'lucide-react';
+import { Calendar, Users, Play, Star, Leaf, Pill, Flower2, Heart, Activity, Zap, BookOpen, FileText } from 'lucide-react';
 import { useSettings, useTestimonials } from '../hooks/useSettings';
+import { supabase } from '../lib/supabase';
+import type { Document } from '../types';
 
 const ICONS: Record<string, typeof Leaf> = { leaf: Leaf, pill: Pill, flower: Flower2, heart: Heart, activity: Activity, zap: Zap };
 
@@ -17,6 +20,20 @@ const SPECIALTIES = [
 export function HomePage() {
   const { settings } = useSettings();
   const { testimonials } = useTestimonials(true);
+  const [documents, setDocuments] = useState<Document[]>([]);
+
+  useEffect(() => {
+    supabase.from('documents').select('*').order('created_at', { ascending: false }).then(({ data }) => {
+      if (data) setDocuments(data);
+    });
+  }, []);
+
+  const formatSize = (bytes?: number) => {
+    if (!bytes) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -100,6 +117,51 @@ export function HomePage() {
               );
             })}
           </div>
+        </div>
+      </section>
+
+      {/* Library Section - Écrits du Dr. Aziz Djalane */}
+      <section className="py-20 bg-[#0A0F2C]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} className="text-center mb-12">
+            <div className="w-20 h-20 bg-[#3B6FE8]/20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <BookOpen className="w-10 h-10 text-[#3B6FE8]" />
+            </div>
+            <h2 className="font-serif text-3xl lg:text-4xl text-white italic mb-4">Les écrits du Dr. Aziz Djalane</h2>
+            <p className="text-gray-400 max-w-2xl mx-auto">Articles, guides et documents pédagogiques sur la médecine fonctionnelle et intégrative</p>
+          </motion.div>
+
+          {documents.length === 0 ? (
+            <div className="text-center py-12">
+              <FileText className="w-16 h-16 text-gray-700 mx-auto mb-4" />
+              <p className="text-gray-500">Les documents seront ajoutés prochainement</p>
+            </div>
+          ) : (
+            <motion.div initial={{ opacity: 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true }} className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {documents.map((doc, i) => (
+                <motion.div key={doc.id} initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay: i * 0.1 }} className="bg-[#141B3D] rounded-xl overflow-hidden border border-[#0A0F2C] group hover:border-[#3B6FE8]/50 transition-all flex flex-col">
+                  <div className="relative h-40 bg-[#050810] flex items-center justify-center overflow-hidden">
+                    {doc.cover_url ? (
+                      <img src={doc.cover_url} alt={doc.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2">
+                        <FileText className="w-10 h-10 text-red-400/60" />
+                        <span className="text-gray-600 text-xs">Aucune couverture</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-4 flex-1 flex flex-col">
+                    <h3 className="text-white font-medium line-clamp-2 mb-1 group-hover:text-[#3B6FE8] transition-colors">{doc.title}</h3>
+                    {doc.file_size && <p className="text-gray-600 text-xs mb-3">{formatSize(doc.file_size)}</p>}
+                    <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="mt-auto flex items-center justify-center gap-2 px-3 py-2 bg-[#3B6FE8]/20 hover:bg-[#3B6FE8] text-[#3B6FE8] hover:text-white rounded-lg text-sm font-medium transition-all">
+                      <FileText className="w-4 h-4" />
+                      Lire le document
+                    </a>
+                  </div>
+                </motion.div>
+              ))}
+            </motion.div>
+          )}
         </div>
       </section>
 

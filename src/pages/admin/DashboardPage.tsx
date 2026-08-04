@@ -933,6 +933,12 @@ function MessagerieTab({ messages, setMessages, conversations, selectedConversat
 // Bibliotheque Tab
 function BibliothequeTab({ documents, setDocuments }: { documents: Document[]; setDocuments: (d: Document[]) => void }) {
   const [uploading, setUploading] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [docTitle, setDocTitle] = useState('');
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverPreview, setCoverPreview] = useState<string | null>(null);
+  const [docPreview, setDocPreview] = useState<{ name: string; size: number } | null>(null);
 
   useEffect(() => {
     const channel = supabase.channel('documents-admin').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'documents' }, (payload) => {
@@ -943,24 +949,61 @@ function BibliothequeTab({ documents, setDocuments }: { documents: Document[]; s
     return () => { channel.unsubscribe(); };
   }, [setDocuments]);
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const resetModal = () => {
+    setShowAddModal(false);
+    setDocTitle('');
+    setDocFile(null);
+    setCoverFile(null);
+    setCoverPreview(null);
+    setDocPreview(null);
+  };
+
+  const handleDocSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploading(true);
-    try {
-      const url = await uploadToCloudinary(file);
-      const { error } = await supabase.from('documents').insert({ title: file.name.split('.')[0], file_url: url, file_name: file.name, file_size: file.size });
-      if (error) throw error;
-    } catch (err) {
-      console.error(err);
-      alert(err instanceof Error ? err.message : 'Erreur lors de l\'envoi du fichier');
-    }
-    setUploading(false);
+    setDocFile(file);
+    setDocPreview({ name: file.name, size: file.size });
+    if (!docTitle) setDocTitle(file.name.split('.')[0]);
     e.target.value = '';
   };
 
+  const handleCoverSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCoverFile(file);
+    const reader = new FileReader();
+    reader.onload = () => setCoverPreview(reader.result as string);
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSubmit = async () => {
+    if (!docFile) { alert('Veuillez sélectionner un document'); return; }
+    setUploading(true);
+    try {
+      const fileUrl = await uploadToCloudinary(docFile);
+      let coverUrl: string | null = null;
+      if (coverFile) {
+        coverUrl = await uploadToCloudinary(coverFile);
+      }
+      const { error } = await supabase.from('documents').insert({
+        title: docTitle || docFile.name.split('.')[0],
+        file_url: fileUrl,
+        file_name: docFile.name,
+        file_size: docFile.size,
+        cover_url: coverUrl,
+      });
+      if (error) throw error;
+      resetModal();
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Erreur lors de l\'envoi');
+    }
+    setUploading(false);
+  };
+
   const handleDelete = async (id: string) => {
-    if (!confirm('Supprimer ?')) return;
+    if (!confirm('Supprimer ce document ?')) return;
     await supabase.from('documents').delete().eq('id', id);
     setDocuments(prev => prev.filter(d => d.id !== id));
   };
@@ -969,37 +1012,117 @@ function BibliothequeTab({ documents, setDocuments }: { documents: Document[]; s
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-serif text-white">Bibliothèque</h2>
-        <label className="flex items-center gap-2 px-4 py-2 bg-[#3B6FE8] hover:bg-[#5A89FF] rounded-lg cursor-pointer transition-colors text-white">
+        <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B6FE8] hover:bg-[#5A89FF] rounded-lg cursor-pointer transition-colors text-white">
           <Upload className="w-4 h-4" />
-          <span>{uploading ? 'Envoi...' : 'Ajouter'}</span>
-          <input type="file" onChange={handleUpload} className="hidden" accept=".pdf,.doc,.docx" disabled={uploading} />
-        </label>
+          <span>Ajouter</span>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {documents.map(doc => (
-          <motion.div key={doc.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="bg-[#141B3D] rounded-xl p-4 border border-[#0A0F2C] group">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-3 min-w-0">
-                <FileText className="w-8 h-8 text-red-400 shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-white font-medium truncate">{doc.title}</p>
-                  <p className="text-gray-500 text-sm">{doc.file_name}</p>
-                  {doc.file_size && <p className="text-gray-600 text-xs">{formatFileSize(doc.file_size)}</p>}
+          <motion.div key={doc.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="bg-[#141B3D] rounded-xl overflow-hidden border border-[#0A0F2C] group flex flex-col">
+            {/* Cover area */}
+            <div className="relative h-40 bg-[#0A0F2C] flex items-center justify-center overflow-hidden">
+              {doc.cover_url ? (
+                <img src={doc.cover_url} alt={doc.title} className="w-full h-full object-cover" loading="lazy" />
+              ) : (
+                <div className="flex flex-col items-center gap-2">
+                  <FileText className="w-10 h-10 text-red-400/60" />
+                  <span className="text-gray-600 text-xs">Aucune couverture</span>
                 </div>
-              </div>
-              <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="p-2 hover:bg-[#0A0F2C] rounded text-gray-400 hover:text-white transition-colors">
+              )}
+              {/* Admin actions */}
+              <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="p-2 bg-black/60 hover:bg-black/80 rounded text-white transition-colors" title="Télécharger">
                   <Download className="w-4 h-4" />
                 </a>
-                <button onClick={() => handleDelete(doc.id)} className="p-2 hover:bg-red-500/20 rounded text-red-400 transition-colors">
+                <button onClick={() => handleDelete(doc.id)} className="p-2 bg-black/60 hover:bg-red-500/80 rounded text-white transition-colors" title="Supprimer">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
             </div>
+            {/* Info area */}
+            <div className="p-4 flex-1 flex flex-col">
+              <p className="text-white font-medium line-clamp-2 mb-1">{doc.title}</p>
+              <p className="text-gray-500 text-sm truncate mb-1">{doc.file_name}</p>
+              {doc.file_size && <p className="text-gray-600 text-xs mb-3">{formatFileSize(doc.file_size)}</p>}
+              <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="mt-auto flex items-center justify-center gap-2 px-3 py-2 bg-[#3B6FE8]/20 hover:bg-[#3B6FE8] text-[#3B6FE8] hover:text-white rounded-lg text-sm font-medium transition-all">
+                <FileText className="w-4 h-4" />
+                Lire le document
+              </a>
+            </div>
           </motion.div>
         ))}
       </div>
+
+      {/* Add document modal */}
+      <AnimatePresence>
+        {showAddModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={resetModal}>
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }} className="bg-[#141B3D] rounded-xl border border-[#0A0F2C] max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-serif text-white">Ajouter un document</h3>
+                <button onClick={resetModal} className="p-1 hover:bg-[#0A0F2C] rounded"><X className="w-5 h-5 text-gray-400" /></button>
+              </div>
+
+              <div className="space-y-5">
+                {/* Title */}
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">Titre du document</label>
+                  <input type="text" value={docTitle} onChange={e => setDocTitle(e.target.value)} placeholder="Ex: Guide de micronutrition" className="w-full px-3 py-2 bg-[#0A0F2C] border border-[#1a2147] rounded-lg text-white text-sm focus:outline-none focus:border-[#3B6FE8]" />
+                </div>
+
+                {/* Cover photo */}
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">Photo de couverture (optionnel)</label>
+                  <div className="flex items-center gap-4">
+                    <div className="w-24 h-32 rounded-lg overflow-hidden bg-[#0A0F2C] border border-[#1a2147] flex items-center justify-center shrink-0">
+                      {coverPreview ? (
+                        <img src={coverPreview} alt="Couverture" className="w-full h-full object-cover" />
+                      ) : (
+                        <ImageIcon className="w-8 h-8 text-gray-600" />
+                      )}
+                    </div>
+                    <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-[#0A0F2C] hover:bg-[#1a2147] rounded-lg text-gray-300 text-sm transition-colors">
+                      <ImageIcon className="w-4 h-4" />
+                      <span>Choisir une image</span>
+                      <input type="file" accept="image/jpeg,image/png,image/jpg,image/webp" onChange={handleCoverSelect} className="hidden" disabled={uploading} />
+                    </label>
+                  </div>
+                  <p className="text-gray-600 text-xs mt-1">Formats: JPG, PNG, WEBP</p>
+                </div>
+
+                {/* Document file */}
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">Document (PDF ou Word)</label>
+                  {docPreview ? (
+                    <div className="flex items-center gap-3 p-3 bg-[#0A0F2C] rounded-lg border border-[#1a2147]">
+                      <FileText className="w-8 h-8 text-red-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm truncate">{docPreview.name}</p>
+                        <p className="text-gray-500 text-xs">{formatFileSize(docPreview.size)}</p>
+                      </div>
+                      <button onClick={() => { setDocFile(null); setDocPreview(null); }} className="p-1 hover:bg-[#141B3D] rounded"><X className="w-4 h-4 text-gray-400" /></button>
+                    </div>
+                  ) : (
+                    <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-[#0A0F2C] hover:bg-[#1a2147] rounded-lg text-gray-300 text-sm transition-colors w-fit">
+                      <Upload className="w-4 h-4" />
+                      <span>Choisir un document</span>
+                      <input type="file" accept=".pdf,.doc,.docx" onChange={handleDocSelect} className="hidden" disabled={uploading} />
+                    </label>
+                  )}
+                  <p className="text-gray-600 text-xs mt-1">Formats: PDF, DOC, DOCX (max 10 Mo)</p>
+                </div>
+
+                {/* Submit */}
+                <button onClick={handleSubmit} disabled={uploading || !docFile} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[#3B6FE8] hover:bg-[#5A89FF] text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Envoi en cours...</> : <><Upload className="w-5 h-5" /> Publier le document</>}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
