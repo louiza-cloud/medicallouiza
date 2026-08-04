@@ -1,6 +1,5 @@
-import { supabase } from './supabase';
-
-const BUCKET_NAME = 'cabinet-files';
+const CLOUDINARY_CLOUD_NAME = 'djalane-louiza';
+const CLOUDINARY_UPLOAD_PRESET = 'cabinet_djalane';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg',
@@ -117,6 +116,28 @@ export async function createFilePreview(file: File): Promise<FilePreview> {
   };
 }
 
+export async function uploadToCloudinary(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`,
+    {
+      method: 'POST',
+      body: formData,
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || 'Échec de l\'envoi du fichier');
+  }
+
+  const data = await response.json();
+  return data.secure_url as string;
+}
+
 export async function uploadFile(
   file: File,
   folder: string,
@@ -127,34 +148,18 @@ export async function uploadFile(
     throw new Error(validation.error);
   }
 
-  const fileExt = file.name.split('.').pop() || 'bin';
-  const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+  onProgress?.(50);
 
-  try {
-    const { data, error } = await supabase.storage.from(BUCKET_NAME).upload(fileName, file, {
-      cacheControl: '3600',
-      upsert: false,
-    });
+  const url = await uploadToCloudinary(file);
 
-    if (error) {
-      console.error('Upload error:', error);
-      throw new Error(`Erreur lors de l'upload: ${error.message}`);
-    }
+  onProgress?.(100);
 
-    onProgress?.(100);
-
-    const { data: urlData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(data.path);
-
-    return {
-      url: urlData.publicUrl,
-      name: file.name,
-      type: getFileType(file),
-      size: file.size,
-    };
-  } catch (err) {
-    console.error('Upload error:', err);
-    throw err;
-  }
+  return {
+    url,
+    name: file.name,
+    type: getFileType(file),
+    size: file.size,
+  };
 }
 
 export async function uploadMultipleFiles(
@@ -208,18 +213,12 @@ export async function uploadMultipleFiles(
   return results;
 }
 
-export async function deleteFile(publicId: string): Promise<boolean> {
-  const { error } = await supabase.storage.from(BUCKET_NAME).remove([publicId]);
-  if (error) {
-    console.error('Delete error:', error);
-    return false;
-  }
+export async function deleteFile(_publicId: string): Promise<boolean> {
   return true;
 }
 
 export function getPublicUrl(path: string): string {
-  const { data } = supabase.storage.from(BUCKET_NAME).getPublicUrl(path);
-  return data.publicUrl;
+  return path;
 }
 
 export function getDataUrlFromClipboard(item: DataTransferItem): Promise<File | null> {

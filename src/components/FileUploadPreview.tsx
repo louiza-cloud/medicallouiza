@@ -44,7 +44,7 @@ export function FileUploadPreview({
         <div className="flex flex-wrap gap-2">
           <AnimatePresence>
             {files.map((filePreview, index) => {
-              const fileId = filePreview.file.name + index;
+              const fileId = `file-${index}`;
               const progress = uploadProgress.get(fileId) || 0;
               const status = uploadStatus.get(fileId) || 'pending';
               const error = uploadErrors.get(fileId);

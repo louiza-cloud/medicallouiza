@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, FileText, Users, Settings, Video, LogOut, Clock, CheckCircle, XCircle, RefreshCw, Eye, Upload, Trash2, Star, Send, AlertCircle, Lock, User, Paperclip, ImageIcon, File, Download, Reply, Edit2, Copy, MoreVertical, Check, CheckCheck, X, Search, Loader2, CornerDownLeft, Forward, Mic, Pin, Archive, EyeOff, Filter, ChevronDown, Menu
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { uploadMultipleFiles, uploadFile, createFilePreview, validateFiles, formatFileSize, FilePreview } from '../../lib/storage';
+import { uploadMultipleFiles, uploadFile, uploadToCloudinary, createFilePreview, validateFiles, formatFileSize, FilePreview } from '../../lib/storage';
 import { FilePreviewModal } from '../../components/FilePreviewModal';
 import { FileUploadPreview } from '../../components/FileUploadPreview';
 import { VoiceRecorder, AudioPlayer } from '../../components/VoiceRecorder';
@@ -948,14 +948,12 @@ function BibliothequeTab({ documents, setDocuments }: { documents: Document[]; s
     if (!file) return;
     setUploading(true);
     try {
-      const fileName = `documents/${Date.now()}-${file.name}`;
-      const { data, error } = await supabase.storage.from('cabinet-files').upload(fileName, file);
+      const url = await uploadToCloudinary(file);
+      const { error } = await supabase.from('documents').insert({ title: file.name.split('.')[0], file_url: url, file_name: file.name, file_size: file.size });
       if (error) throw error;
-      const { data: urlData } = supabase.storage.from('cabinet-files').getPublicUrl(data.path);
-      await supabase.from('documents').insert({ title: file.name.split('.')[0], file_url: urlData.publicUrl, file_name: file.name, file_size: file.size });
     } catch (err) {
       console.error(err);
-      alert('Erreur');
+      alert(err instanceof Error ? err.message : 'Erreur lors de l\'envoi du fichier');
     }
     setUploading(false);
     e.target.value = '';
