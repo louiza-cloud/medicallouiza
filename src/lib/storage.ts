@@ -1,4 +1,4 @@
-const CLOUDINARY_CLOUD_NAME = 'djalane-louiza';
+const CLOUDINARY_CLOUD_NAME = 'dqhsoe81d';
 const CLOUDINARY_UPLOAD_PRESET = 'cabinet_djalane';
 
 const ALLOWED_MIME_TYPES = [
