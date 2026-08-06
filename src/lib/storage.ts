@@ -121,20 +121,24 @@ export async function uploadToCloudinary(file: File): Promise<string> {
   formData.append('file', file);
   formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
 
+  console.log('Uploading to Cloudinary...');
+  console.log('Cloud name:', CLOUDINARY_CLOUD_NAME);
+  console.log('File name:', file.name);
+  console.log('File size:', file.size);
+  console.log('File type:', file.type);
+
   const response = await fetch(
     `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`,
-    {
-      method: 'POST',
-      body: formData,
-    }
+    { method: 'POST', body: formData }
   );
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error?.message || 'Échec de l\'envoi du fichier');
-  }
-
   const data = await response.json();
+  console.log('Cloudinary response:', JSON.stringify(data));
+
+  if (data.error) {
+    console.error('Cloudinary error:', data.error.message);
+    throw new Error(data.error.message);
+  }
   return data.secure_url as string;
 }
 

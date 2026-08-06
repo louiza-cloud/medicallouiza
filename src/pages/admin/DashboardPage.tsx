@@ -996,8 +996,9 @@ function BibliothequeTab({ documents, setDocuments }: { documents: Document[]; s
       if (error) throw error;
       resetModal();
     } catch (err) {
-      console.error(err);
-      alert(err instanceof Error ? err.message : 'Erreur lors de l\'envoi');
+      console.error('Erreur lors de l\'envoi:', err);
+      const message = err instanceof Error ? err.message : 'Erreur lors de l\'envoi';
+      alert('Erreur lors de l\'envoi du document: ' + message);
     }
     setUploading(false);
   };
