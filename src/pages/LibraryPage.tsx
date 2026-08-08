@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { BookOpen, FileText, ImageIcon } from 'lucide-react';
+import { BookOpen, FileText, Download, ExternalLink } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Document } from '../types';
 
@@ -37,6 +37,10 @@ export function LibraryPage() {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
+  const openDocument = (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="min-h-[80vh] bg-[#050810] py-12">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -61,7 +65,14 @@ export function LibraryPage() {
         ) : (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {documents.map((doc, i) => (
-              <motion.div key={doc.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="bg-[#141B3D] rounded-xl overflow-hidden border border-[#0A0F2C] group hover:border-[#3B6FE8]/50 transition-all flex flex-col">
+              <motion.div
+                key={doc.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.1 }}
+                onClick={() => openDocument(doc.file_url)}
+                className="bg-[#141B3D] rounded-xl overflow-hidden border border-[#0A0F2C] group hover:border-[#3B6FE8]/50 transition-all flex flex-col cursor-pointer"
+              >
                 <div className="relative h-40 bg-[#0A0F2C] flex items-center justify-center overflow-hidden">
                   {doc.cover_url ? (
                     <img src={doc.cover_url} alt={doc.title} className="w-full h-full object-cover" loading="lazy" />
@@ -71,14 +82,33 @@ export function LibraryPage() {
                       <span className="text-gray-600 text-xs">Aucune couverture</span>
                     </div>
                   )}
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                    <ExternalLink className="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </div>
                 </div>
                 <div className="p-4 flex-1 flex flex-col">
                   <h3 className="text-white font-medium line-clamp-2 mb-1 group-hover:text-[#3B6FE8] transition-colors">{doc.title}</h3>
                   {doc.file_size && <p className="text-gray-600 text-xs mb-3">{formatSize(doc.file_size)}</p>}
-                  <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="mt-auto flex items-center justify-center gap-2 px-3 py-2 bg-[#3B6FE8]/20 hover:bg-[#3B6FE8] text-[#3B6FE8] hover:text-white rounded-lg text-sm font-medium transition-all">
-                    <FileText className="w-4 h-4" />
-                    Lire le document
-                  </a>
+                  <div className="mt-auto flex gap-2" onClick={(e) => e.stopPropagation()}>
+                    <a
+                      href={doc.file_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-[#3B6FE8]/20 hover:bg-[#3B6FE8] text-[#3B6FE8] hover:text-white rounded-lg text-sm font-medium transition-all"
+                    >
+                      <FileText className="w-4 h-4" />
+                      Lire
+                    </a>
+                    <a
+                      href={doc.file_url}
+                      download
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 px-3 py-2 bg-[#0A0F2C] hover:bg-[#1a2147] text-gray-400 hover:text-white rounded-lg text-sm font-medium transition-all"
+                      title="Télécharger"
+                    >
+                      <Download className="w-4 h-4" />
+                    </a>
+                  </div>
                 </div>
               </motion.div>
             ))}
