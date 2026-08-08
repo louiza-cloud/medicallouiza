@@ -133,11 +133,16 @@ export async function uploadToCloudinary(file: File): Promise<string> {
   );
 
   const data = await response.json();
-  console.log('Cloudinary response:', JSON.stringify(data));
+  console.log('[Cloudinary] Réponse complète:', JSON.stringify(data, null, 2));
+  console.log('[Cloudinary] secure_url:', data.secure_url);
 
-  if (data.error) {
-    console.error('Cloudinary error:', data.error.message);
-    throw new Error(data.error.message);
+  if (!response.ok || data.error) {
+    console.error('[Cloudinary] Erreur:', data.error?.message || response.statusText);
+    throw new Error(data.error?.message || `Upload échoué (${response.status})`);
+  }
+  if (!data.secure_url || !data.secure_url.startsWith('https://res.cloudinary.com/')) {
+    console.error('[Cloudinary] secure_url invalide:', data.secure_url);
+    throw new Error('URL Cloudinary invalide reçue');
   }
   return data.secure_url as string;
 }

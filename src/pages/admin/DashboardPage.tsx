@@ -981,22 +981,40 @@ function BibliothequeTab({ documents, setDocuments }: { documents: Document[]; s
     if (!docFile) { alert('Veuillez sélectionner un document'); return; }
     setUploading(true);
     try {
+      console.log('[Bibliothèque] Début de l\'envoi du document:', { name: docFile.name, size: docFile.size, type: docFile.type });
+
       const fileUrl = await uploadToCloudinary(docFile);
+      console.log('[Bibliothèque] URL Cloudinary du document:', fileUrl);
+
       let coverUrl: string | null = null;
       if (coverFile) {
         coverUrl = await uploadToCloudinary(coverFile);
+        console.log('[Bibliothèque] URL Cloudinary de la couverture:', coverUrl);
       }
-      const { error } = await supabase.from('documents').insert({
+
+      const insertData = {
         title: docTitle || docFile.name.split('.')[0],
         file_url: fileUrl,
         file_name: docFile.name,
         file_size: docFile.size,
+        file_type: docFile.type,
         cover_url: coverUrl,
-      });
-      if (error) throw error;
+        created_at: new Date().toISOString(),
+      };
+      console.log('[Bibliothèque] Données insérées dans Supabase:', insertData);
+
+      const { data: insertedData, error: insertError } = await supabase.from('documents').insert(insertData).select().single();
+
+      if (insertError) {
+        console.error('[Bibliothèque] Erreur d\'insertion Supabase:', insertError);
+        throw insertError;
+      }
+      console.log('[Bibliothèque] Document enregistré avec succès:', insertedData);
+
+      setDocuments(prev => prev.some(d => d.id === insertedData.id) ? prev : [insertedData as Document, ...prev]);
       resetModal();
     } catch (err) {
-      console.error('Erreur lors de l\'envoi:', err);
+      console.error('[Bibliothèque] Erreur lors de l\'envoi:', err);
       const message = err instanceof Error ? err.message : 'Erreur lors de l\'envoi';
       alert('Erreur lors de l\'envoi du document: ' + message);
     }
